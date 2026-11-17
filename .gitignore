@@ -1,0 +1,29 @@
+# Working design document and private idea notes — kept locally, not published.
+/design.md
+/.work/
+
+# Local agent / editor state
+.claude/
+.codex/
+.vscode-test/
+
+# VS Code extension build output
+node_modules/
+out/
+*.vsix
+*.js.map
+
+# C build output
+build/
+*.o
+*.a
+*.so
+/ev3lib/lib/
+
+# Bundled cross-compiler (downloaded, never committed)
+/toolchain/
+
+# Cross-CLI review scratch
+/.review-out/
+
+*.log
