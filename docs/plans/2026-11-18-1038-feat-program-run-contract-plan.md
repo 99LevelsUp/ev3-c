@@ -19,7 +19,7 @@ execution: code
 - **Stop conditions:**
   - U1 shows the launcher loop starves the VM (cockpit loses the brick or Stop stops working): stop and return to `ce-brainstorm`, because the launcher choice reopens.
   - U1 shows Zig + musl binaries do not run on the brick: stop and ask Petr which fallback toolchain to build (KTD1); do not adopt the c4ev3 toolchain.
-  - U1 shows the project folder lives in RAM until a clean shutdown: record it in the spike findings and user docs, then continue (KTD8).
+  - U1 shows the project folder lives in RAM until a clean shutdown: record it in the spike findings and user docs, then continue (KTD10 and the "Considered and not built" item on the RAM project folder).
 - **Who finishes:** `ce-work` implements and verifies; Petr runs the hardware acceptance (U10), reviews, and pushes.
 - **Open blockers:** none for planning. Hardware access for U1 and U10 is scheduled through Petr.
 
@@ -239,34 +239,35 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 - KTD4. **The supervisor and `libev3.a` are built by CI with the same toolchain and ship inside the VSIX.** The user's build compiles only the student's sources and links `libev3.a`. Both artifacts are small static files, and building them on the student's machine would add a slow first build and a second failure surface.
 - KTD5. **The launcher is emitted by a TypeScript bytecode encoder in the core.** One launcher template per program is generated at build time from header, constant, variable, and jump encoders with backpatched labels, using the opcodes in `bytecodes.h`. LEGO's `lmsasm` assembler (GPL, needs Java) is used only at development time to regenerate a golden byte fixture for the template.
 - KTD6. **The launcher runs one start, a handshake, and a stat-only poll loop.**
-  1. Remove a stale run marker in the project folder, then call `opSYSTEM` once to start the supervisor in the background, passing the project folder obtained from `FILENAME GET_FOLDERNAME`.
-  2. Open a slot token file in the project folder once and keep it open for the whole run; never close it.
-  3. Wait up to 6 s for the supervisor's run marker to appear; if it never does, end the slot.
-  4. Every ~100 ms: test the run marker with `FILENAME EXIST`, and set or clear the Back block with `UI_BUTTON SET_BACK_BLOCK` when ev3lib's Back request marker appears or disappears.
-  5. End when the run marker is gone.
+  1. Build the project folder path with `FILENAME GET_FOLDERNAME`. Every marker path the launcher uses is that folder plus a short dot-name: `.tok` (slot token), `.run` (run marker), `.bak` (Back request). The firmware resolves a bare name starting with a dot against its own working directory, and it refuses an extension of four or more characters, in which case a file open retries forever.
+  2. Remove stale `.run` and `.bak`, delete `.tok`, then create `.tok` and keep it open for the whole run; never close it.
+  3. Call `opSYSTEM` once to start the supervisor in the background, passing the project folder, the retention rule, and the output cap as arguments.
+  4. Wait up to 6 s for `.run` to appear; if it never does, end the slot.
+  5. Every ~100 ms: test `.run` with `FILENAME EXIST`, and set or clear the Back block with `UI_BUTTON SET_BACK_BLOCK` when `.bak` appears or disappears.
+  6. End when `.run` is gone.
 
-  No file is closed inside the loop, because every bytecode close runs a global `sync()`. Confirm the loop cost in U1. Governs R4, R12.
-- KTD7. **The supervisor detects slot end through the slot token, without writes.** When the slot ends, the VM closes the token file. The supervisor finds the `lms2012` process once and polls its open file descriptors for the token every ~100 ms. Fallback if U1 disproves it: the launcher appends one byte per tick to the already-open token and the supervisor watches the size stop growing. A FIFO was rejected because opening it blocks the VM and a write without a reader kills the VM with `SIGPIPE`. Confirm in U1. Governs R10.
+  No file is closed inside the loop, because every bytecode close runs a global `sync()`. Confirm the loop cost and the dot-name rules in U1. Governs R4, R12, R15, R19.
+- KTD7. **The supervisor detects slot end through the slot token, without writes.** When the slot ends, the VM closes `.tok`. At start-up the supervisor finds the `lms2012` process and records the device and inode of `.tok` among the VM's open file descriptors. If the VM does not hold it, the supervisor records "slot ended before start" and starts no program. Afterwards it polls every ~100 ms, and the slot has ended when the VM no longer holds a descriptor with that inode; a `.tok` recreated under the same path by a newer launcher does not count. Fallback if U1 disproves descriptor polling: the launcher appends one byte per tick to the already-open token and the supervisor watches the size stop growing. A FIFO was rejected because opening it blocks the VM and a write without a reader kills the VM with `SIGPIPE`. Confirm in U1. Governs R10.
 - KTD8. **The supervisor owns its own process group and a brick-wide run lock.**
-  - It calls `setsid()` before forking the program, so killing the group never reaches the VM.
+  - It calls `setsid()` to leave the VM's process group, and the program gets a group of its own: the child calls `setpgid(0,0)` after `fork()` and the parent repeats `setpgid(child, child)` to close the race. Group signals go only to the program's group, never to the supervisor's, so they reach neither the VM nor the supervisor.
   - It closes inherited descriptors and resets signal dispositions before `exec`.
   - It takes an `flock` on one lock file in `/home/root/lms2012/prjs/` and holds it until its completion record is written. A new supervisor waits up to 3 s for that lock, so the previous run's final motor stop (R11) can never hit the next run, including runs of other projects.
-  - It writes its PID into the run marker and, at the end, removes the marker only if it still holds that PID.
+  - It creates `.run` only after it holds the lock, and removes `.run` and `.bak` just before releasing the lock, so a stale Back request never blocks Back in the next run.
 
   Governs R10, R11.
-- KTD9. **Termination is SIGTERM, a 500 ms grace period, then SIGKILL, all to the program's group.** Output pipes are drained with a 1 s deadline. Motors are stopped by writing the firmware's program-stop command to `/dev/lms_pwm`, as the firmware's own stop does. Governs R10, R11.
+- KTD9. **Termination is SIGTERM, a 500 ms grace period, then SIGKILL, all to the program's group, and the group is always emptied.** On slot end the supervisor waits until the whole group is gone, not just the direct child. When the program exits on its own, the supervisor still sends SIGKILL to the program's group, so a helper process the program forked cannot keep driving motors after the run. Output pipes are drained with a 1 s deadline. Motors are stopped by writing the firmware's program-stop command to `/dev/lms_pwm`, as the firmware's own stop does. Governs R10, R11.
 - KTD10. **The run folder is flat and short, and the completion record is an atomic rename.**
-  - Layout: `<project>/run/next` holds the counter, and `<project>/run/<n>/` holds `out`, `err`, and `res`.
+  - Layout: `<project>/runs/next` holds the counter, and `<project>/runs/<n>/` holds `out`, `err`, and `res`. The name `ret` is reserved there for the after-v1 list of returned files; v1 neither creates nor reads it, and retention deletes it with the folder.
   - `res` is written as a temporary file and renamed into place as the supervisor's last write. Its existence is the completion record.
-  - `res` is small `key=value` text: exit code or signal, how the run ended (program end or slot end), truncation flags, and the run number.
-  - The longest path is 24 + 15 + 5 + 5 + 4 = 53 bytes, and the launcher path `<project>/<project>.rbf` is at most 59.
-  - A slot token, a run marker, and a Back request marker live in the project folder under dot-names.
+  - `res` is small `key=value` text: exit code or signal, how the run ended (program end, slot end, or slot ended before start), truncation flags, the run number, and the launch ID when EVƎ C started the run (KTD12).
+  - The longest path is 24 + 15 + 6 + 5 + 4 = 54 bytes, and the launcher path `<project>/<project>.rbf` is at most 59.
+  - The slot token, run marker, and Back request marker live in the project folder as `.tok`, `.run`, and `.bak` (KTD6).
 
-  If U1 shows the project folder is in RAM, the counter can roll back after a power loss; that is accepted with the rest of KTD8's considered-and-not-built item. Governs R13, R14, R18, R22, R23.
+  If U1 shows the project folder is in RAM, the counter can roll back after a power loss; that is accepted with the "Considered and not built" item on the RAM project folder. Governs R13, R14, R18, R22, R23.
 - KTD11. **The core talks to the brick only through a narrow `BrickPort` interface.** Build, toolchain, launcher, deploy, run control, and run results take a port plus host-supplied settings and logger, and import nothing from `vscode`. The VS Code layer adapts cockpit's `registerConsumer` handle to the port and keeps its own copy of the cockpit API types with an `apiVersion === 1` check, because cockpit publishes no types package. This mirrors cockpit's own core extraction. Governs R2, R6, R7.
-- KTD12. **EVƎ C ties a Run to its run number by reading the counter first.** Before `runProgram`, EVƎ C reads `run/next`. After cockpit reports "stopped", or `runProgram` returns without a running state, or the brick reconnects, it polls `run/<n>/res` at most once per second for up to 10 s. If no record appears, it reports "no result recorded" and leaves the run listed for later. Governs R14, R21.
+- KTD12. **EVƎ C ties a Run to its result with a launch ID, not a predicted run number.** Before `runProgram`, EVƎ C writes a fresh launch ID into `.req` in the project folder. The supervisor reads and deletes `.req` at start and records the ID in `res`; a run started from the brick menu has none. After cockpit reports "stopped", or `runProgram` returns without a running state, or the brick reconnects, EVƎ C lists the newest run folders and polls their `res` at most once per second for up to 10 s until one carries its ID. If none does, it reports "no result recorded" and leaves the runs listed for later. A predicted number would be wrong whenever a brick-menu run or a still-finishing run took it first. Governs R14, R21.
 - KTD13. **Deploy compares MD5 before uploading.** EVƎ C lists the project folder, compares cockpit's per-file MD5 with the local artifacts, and uploads only what differs. That skips the unchanged supervisor and doubles as its version check. Before any upload it asks `isProgramRunning` and refuses if a program runs (R24). Governs R6, R24.
-- KTD14. **ev3lib v1 is the minimum the contract needs.** The surface is init and exit, motor power and stop, line-buffered stdio set up before `main`, sleep, and the Back takeover request. A normal exit also stops the motors. Everything else from the design notes waits. Governs R12, R20.
+- KTD14. **ev3lib v1 is the minimum the contract needs.** The surface is init and exit, motor power and stop, line-buffered stdio set up before `main`, sleep, the Back takeover request, and a read of the Back button state from `/dev/lms_ui`, so a program that took Back over can react to the press. A normal exit also stops the motors. Everything else from the design notes waits. Governs R12, R20.
 - KTD15. **Retention defaults are "keep the last 10 runs" and a 64 KiB cap per output stream.** The worst case is about 1.3 MB of run folders per project, which fits even the ~6 MB RAM-backed project folder the research suspects, while 64 KiB holds several thousand lines of debug output and stays a single small `readFile`. A megabyte rule smaller than two capped streams is rejected at build time, because one run could exceed it. Revisit the defaults if U1 measures less free space. Governs R15, R19.
 - KTD16. **Emergency Stop in EVƎ C calls cockpit's `emergencyStop` and nothing else.** It appears under the "EV3 C" category next to Run and Stop, so a duplicate of cockpit's own command is acceptable. Governs R7.
 
@@ -306,38 +307,41 @@ sequenceDiagram
   participant FS as Project folder
   participant S as Supervisor
   participant P as Program
-  L->>FS: remove stale run marker
-  L->>S: opSYSTEM start in background
-  L->>FS: open slot token, keep open
-  S->>S: setsid, take brick-wide lock (wait up to 3 s)
-  S->>FS: write run marker with own PID
+  L->>FS: remove stale .run and .bak, recreate .tok
+  L->>FS: open .tok, keep open
+  L->>S: opSYSTEM start in background (folder, retention rule, output cap)
+  S->>S: record .tok inode held by the VM (absent: slot ended before start)
+  S->>S: take brick-wide lock (wait up to 3 s)
+  S->>FS: create .run
   S->>FS: retention, next run number, create run folder
   S->>P: fork + exec with run folder path
   loop every ~100 ms
-    L->>FS: run marker exists? Back request exists?
-    S->>S: slot token still open in the VM?
+    L->>FS: .run exists? .bak exists?
+    S->>S: VM still holds the .tok inode?
   end
   P-->>S: exits, or S terminates group after slot end
   S->>S: drain output, stop motors
   S->>FS: rename res into place
-  S->>FS: remove run marker if it holds own PID, release lock
-  L-->>L: run marker gone, end slot
+  S->>FS: remove .run and .bak, release lock
+  L-->>L: .run gone, end slot
 ```
 
 Supervisor lifecycle:
 
 ```mermaid
 stateDiagram-v2
-  [*] --> WaitLock
+  [*] --> CheckToken
+  CheckToken --> WaitLock: VM holds .tok
+  CheckToken --> Fail: .tok not held (slot ended before start)
   WaitLock --> Prepare: lock taken
   WaitLock --> Fail: 3 s timeout
   Prepare --> Running: program started
   Prepare --> Fail: exec failed
-  Running --> Draining: program exited
+  Running --> Draining: program exited, group killed
   Running --> Terminating: slot token gone
   Terminating --> Draining: group gone (TERM, 500 ms, KILL)
   Draining --> Recording: pipes drained or 1 s
-  Recording --> [*]: res renamed, motors stopped, marker removed, lock released
+  Recording --> [*]: res renamed, motors stopped, markers removed, lock released
   Fail --> [*]: res records the failure when a run folder exists
 ```
 
@@ -441,10 +445,11 @@ docs/spikes/                  brick spike findings
 **Files:** `package.json`, `tsconfig.json`, `tsconfig.test.json`, `.eslintrc.json`, `scripts/run-unit-tests.cjs`, `scripts/test-setup.cjs`, `src/test/vscodeStub.cjs`, `src/extension.ts`, `src/core/index.ts`, `src/__tests__/coreImports.test.ts`, `.github/workflows/ci.yml`, `AGENTS.md`.
 
 **Approach:**
-1. Mirror cockpit's tooling: TypeScript strict, esbuild bundle, `node:test` with a `vscode` stub, ESLint with type-checked rules, Windows CI on Node 20. Use 4-space indentation per `AGENTS.md`, not cockpit's tabs.
-2. Declare `extensionDependencies` on `99LevelsUp.ev3-cockpit`, publisher and naming per the project conventions (display "EVƎ C", command IDs `ev3-c.*`, category "EV3 C").
-3. Declare `capabilities.untrustedWorkspaces` as limited with build disabled, because the build runs a compiler on workspace files.
-4. Add `supervisor/` and `docs/spikes/` to the layout section of `AGENTS.md`.
+1. Mirror cockpit's tooling: TypeScript strict, esbuild bundle, `node:test` with a `vscode` stub, ESLint with type-checked rules, Node 20. Use 4-space indentation per `AGENTS.md`, not cockpit's tabs.
+2. CI has two jobs: compile, lint, and unit tests on `windows-latest`; native tests and the runtime build on `ubuntu-latest`, because the supervisor tests need fork, process groups, `flock`, and `/proc`.
+3. Declare `extensionDependencies` on `99LevelsUp.ev3-cockpit`, publisher and naming per the project conventions (display "EVƎ C", command IDs `ev3-c.*`, category "EV3 C").
+4. Declare `capabilities.untrustedWorkspaces` as limited with build disabled, because the build runs a compiler on workspace files.
+5. Add `supervisor/` and `docs/spikes/` to the layout section of `AGENTS.md`.
 
 **Patterns to follow:** `ev3-cockpit/package.json` scripts and `tsconfig*.json`, `ev3-cockpit/scripts/run-unit-tests.cjs`, `ev3-cockpit/.github/workflows/ci.yml`.
 
@@ -492,14 +497,15 @@ docs/spikes/                  brick spike findings
 **Approach:**
 1. A constructor that runs before `main` sets stdout and stderr to line buffering (R20) and reads the run-folder and project-folder paths the supervisor passes in the environment.
 2. Motor calls write the firmware's PWM device commands; device paths are overridable for host tests.
-3. The Back takeover request creates or removes the Back request marker in the project folder (KTD6).
+3. The Back takeover request creates or removes `.bak` in the project folder (KTD6), and a Back state call reads the raw button state from `/dev/lms_ui`.
 4. A normal exit stops all motors.
 5. `build-runtime` builds `libev3.a` and the supervisor (U5) with the U3 toolchain into `out/runtime/`, and the packaging step includes that folder.
 
 **Test scenarios:**
 - Host test: output written with `printf` before an `abort()` in a child process is present in the captured file (line buffering).
 - Host test: motor power and stop write the expected command bytes to a fake device file.
-- Host test: requesting and releasing the Back takeover creates and removes the marker in the given project folder.
+- Host test: requesting and releasing the Back takeover creates and removes `.bak` in the given project folder.
+- Host test: the Back state call reports pressed and released from a fake button device.
 - Host test: a normal return from `main` writes a stop command to the fake device.
 
 **Verification:** CI produces `libev3.a`, and a test program linked against it passes the U3 ELF check.
@@ -515,7 +521,7 @@ docs/spikes/                  brick spike findings
 **Files:** `supervisor/src/supervisor.c`, `supervisor/src/runfolder.c`, `supervisor/src/slotwatch.c`, `supervisor/tests/test_runfolder.c`, `supervisor/tests/test_supervisor.c`.
 
 **Approach:**
-1. Arguments: project folder; the retention rule and output cap come from a small rules file the build writes next to the program.
+1. Arguments from the launcher: project folder, retention rule, and output cap (KTD6).
 2. Follow the lifecycle in the High-Level Technical Design: lock, marker, retention, counter, run folder, fork and exec into its own group, watch both the child and the slot token, terminate, drain, motor stop, atomic `res`, marker removal, unlock.
 3. Retention deletes whole run folders natively, oldest first, never the current one.
 4. Output capture stops at the cap per stream and records truncation.
@@ -528,14 +534,18 @@ docs/spikes/                  brick spike findings
 - A child that dereferences a null pointer produces `res` with signal 11.
 - A child killed with SIGKILL produces `res` with signal 9.
 - Removing the slot token from the fake VM descriptors terminates a child that ignores SIGTERM within about 600 ms and records "slot end".
-- A child that forks a grandchild: terminating the group ends both.
+- A child that forks a grandchild: terminating the group ends both, and the supervisor survives to write `res`.
+- A child that forks a motor-driving grandchild and then exits on its own: the grandchild is killed before `res` is written.
+- A `.req` present at start is deleted and its launch ID appears in `res`; without `.req`, `res` has no launch ID.
 - The fake PWM device receives a stop command after the child is gone in every case above.
 - Output beyond the cap is not written and `res` flags truncation for that stream only.
 - With "keep the last 5 runs" and runs 1–5 present, starting run 6 deletes run 1 before creating run 6.
 - With the counter at 12 and all run folders deleted, the next run is 12.
 - A second supervisor for the same project waits while the first holds the lock and starts after it releases.
-- A second supervisor that cannot get the lock within 3 s writes no run folder and removes no marker.
-- A finishing supervisor does not remove a run marker whose PID belongs to a newer supervisor.
+- A second supervisor that cannot get the lock within 3 s writes no run folder and creates no `.run`.
+- A supervisor started when the VM does not hold `.tok` starts no program and records "slot ended before start".
+- A `.tok` deleted and recreated under the same path within one poll interval still counts as slot end for the running supervisor.
+- A `.bak` left over from a crashed run is gone after the next supervisor finishes, and the launcher's start-up removes it before the program runs.
 - `res` never exists in a partial state: an interrupted write leaves only the temporary file.
 
 **Verification:** all host tests pass in CI, and the supervisor built for the brick passes the ELF check.
@@ -561,6 +571,8 @@ docs/spikes/                  brick spike findings
 - The template for a fixed project name matches the golden bytes exactly.
 - The image size field equals the file length, and the instruction offset points past the headers.
 - A 15-byte project name produces a launcher whose path and command fit their limits; a 16-byte name is rejected by the caller (R23).
+- Every file name the template uses passes the firmware's path, name, and extension length rules, and every marker path is built from the folder name rather than a bare dot-name.
+- The supervisor command carries the project folder, retention rule, and output cap in the order U5 expects.
 
 **Verification:** the generated launcher matches the golden file, and the U1 probe behavior is reproduced on the brick in U10.
 
@@ -577,7 +589,7 @@ docs/spikes/                  brick spike findings
 **Approach:**
 1. `ev3c.json` holds the project name, the retention rule, and the output cap, with KTD15 defaults when absent.
 2. Validate the name (R23) and the rules (KTD15) before compiling.
-3. Compile and link via U3, run the ELF check, emit the launcher via U6, write the rules file, and return the artifact set with local paths and target brick paths.
+3. Compile and link via U3, run the ELF check, emit the launcher via U6 with the retention rule and output cap in its supervisor command, and return the artifact set with local paths and target brick paths.
 
 **Test scenarios:**
 - A missing `ev3c.json` uses the folder name when it is valid and the default rules.
@@ -603,7 +615,7 @@ docs/spikes/                  brick spike findings
 2. Deploy follows KTD13; a failed upload is retried once and otherwise reported (R6).
 3. Run control follows KTD12 and forwards Stop and Emergency Stop unchanged (R7).
 4. Run results parse `res`, `out`, and `err` into one result model.
-5. Run folders list runs from `run/`, delete one folder at a time, skip the running run, and list again to confirm (R16, R17).
+5. Run folders list runs from `runs/`, delete one folder at a time, skip the running run, and list again to confirm (R16, R17).
 6. The fake port keeps an in-memory brick, deletes only one folder level like the real brick, and scripts state changes.
 
 **Test scenarios:**
@@ -611,6 +623,7 @@ docs/spikes/                  brick spike findings
 - Deploy refuses with a clear message while the fake reports a running program (Covers R24).
 - A failed upload is retried once and then reported with cockpit's error code.
 - After Run, a "stopped" event with `res` appearing on the second poll yields a result with the PC start time.
+- A newer run folder from a brick-menu start, whose `res` has no launch ID, is not shown as the author's result.
 - `res` never appearing within 10 s yields "no result recorded" and the run stays listed.
 - `runProgram` returning not running still triggers the result wait.
 - A reconnect during the wait resumes polling instead of failing.
@@ -686,9 +699,9 @@ docs/spikes/                  brick spike findings
 | Compile | `npm run compile` | TypeScript builds with strict settings |
 | Lint | `npm run lint` | style and type-checked rules |
 | Unit | `npm run test:unit` | core and host logic, golden launcher bytes, fake-port brick operations |
-| Native | `npm run test:native` | ev3lib and supervisor host tests built with Zig |
+| Native | `npm run test:native` | ev3lib and supervisor host tests built with Zig (Linux) |
 | Runtime | `npm run build:runtime` | brick runtime builds and passes the ELF check |
-| CI | `npm run test:ci` | all of the above on Windows CI |
+| CI | `npm run test:ci` | compile, lint, and unit on `windows-latest`; native and runtime on `ubuntu-latest` |
 | Hardware | `tests/hardware/acceptance.md` procedure | AE1–AE7 and F1–F4 on a real brick (U10) |
 
 The cockpit mock cannot run programs and truncates binaries, so no contract behavior counts as verified until the hardware procedure passes.
