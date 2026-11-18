@@ -1,0 +1,51 @@
+{
+    "name": "ev3-c",
+    "displayName": "EVƎ C",
+    "description": "Write, build, and run C programs on LEGO EV3 bricks with the original firmware",
+    "version": "0.0.1",
+    "publisher": "99LevelsUp",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/99LevelsUp/ev3-c"
+    },
+    "engines": {
+        "vscode": "^1.95.0",
+        "node": ">=20.0.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Other"
+    ],
+    "extensionDependencies": [
+        "99LevelsUp.ev3-cockpit"
+    ],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": "limited",
+            "description": "Building runs a compiler on the workspace's source files, so EVƎ C does not build until you trust the workspace."
+        }
+    },
+    "activationEvents": [
+        "workspaceContains:ev3c.json"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {},
+    "scripts": {
+        "compile": "tsc",
+        "lint": "eslint src --ext .ts",
+        "build:dev": "esbuild src/extension.ts --bundle --platform=node --target=node20 --external:vscode --outfile=out/extension.js --sourcemap",
+        "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node20 --external:vscode --outfile=out/extension.js",
+        "test:unit": "node scripts/run-unit-tests.cjs",
+        "test:ci": "npm run compile && npm run lint && npm run test:unit",
+        "watch": "tsc --watch"
+    },
+    "devDependencies": {
+        "@types/node": "^20.14.0",
+        "@types/vscode": "^1.95.0",
+        "@typescript-eslint/eslint-plugin": "^7.16.0",
+        "@typescript-eslint/parser": "^7.16.0",
+        "esbuild": "^0.21.0",
+        "eslint": "^8.57.0",
+        "typescript": "^5.5.0"
+    }
+}

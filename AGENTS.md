@@ -5,22 +5,22 @@
 
 Repository layout:
 
-- `src/` — VS Code extension (TypeScript), `package.json` in the repository root.
+- `src/` — VS Code extension (TypeScript), `package.json` in the repository root. `src/core/` is the VS Code-free core (build, toolchain, launcher, brick operations) and must never import `vscode`; `src/host/` adapts it to VS Code and EVƎ Cockpit.
+- `supervisor/` — the native supervisor that runs a student program on the brick (C, built for the brick and for host tests).
 - `ev3lib/include/ev3.h` + `ev3lib/include/ev3/` — public headers of Layer 1 (`ev3_core`); `ev3/toolkit/` is Layer 2, `ev3/robotics/` is Layer 3.
 - `ev3lib/src/{core,toolkit,robotics}/` — implementation of the three layers.
 - `ev3lib/tests/` — PC-hosted unit tests.
 - `templates/` — starter projects created by the extension.
 - `assets/` — LCD images and sounds shipped with the library.
-- `docs/` — contributor and user documentation.
+- `tests/hardware/` — programs and procedures that verify behavior on a real brick.
+- `docs/` — contributor and user documentation; `docs/plans/` holds implementation plans and `docs/spikes/` hardware spike findings.
 
 Follow that structure when scaffolding new code.
 
 ## Build, Test, and Development Commands
-This snapshot does not yet include runnable build scripts. Before adding one-off tooling, align it with the commands already proposed in `design.md`:
-
-- `arm-linux-gnueabi-gcc program.c -lev3 -lm -lpthread` builds EV3-targeted binaries.
-- `cd ev3lib/tests && cmake .. && make && ctest` is the planned native test loop for PC-hosted `ev3lib` tests.
-- `gcc -o test_pid test_pid.c ../src/toolkit/ev3_pid.c -lm` is the lightweight single-test pattern for pure C modules.
+- `npm install` once, then `npm run test:ci` runs compile, lint, and unit tests (`npm run compile`, `npm run lint`, `npm run test:unit` individually).
+- `npm run bundle` produces `out/extension.js` for packaging.
+- Brick binaries are static ARMv5TE soft-float executables built with Zig and musl, not with `arm-linux-gnueabi-gcc`: the stock firmware ships glibc 2.8 on kernel 2.6.33. The current plan in `docs/plans/` overrides the toolchain section of `design.md`.
 
 Prefer `rg --files` and `rg "<pattern>"` for repository search.
 
