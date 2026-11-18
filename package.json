@@ -29,7 +29,66 @@
         "workspaceContains:ev3c.json"
     ],
     "main": "./out/extension.js",
-    "contributes": {},
+    "contributes": {
+        "commands": [
+            {
+                "command": "ev3-c.build",
+                "title": "Build",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.upload",
+                "title": "Upload",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.run",
+                "title": "Run",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.stop",
+                "title": "Stop",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.emergencyStop",
+                "title": "Emergency Stop",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.showRuns",
+                "title": "Show Runs",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.deleteRuns",
+                "title": "Delete Runs",
+                "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.checkToolchain",
+                "title": "Check Toolchain",
+                "category": "EV3 C"
+            }
+        ],
+        "configuration": {
+            "title": "EVƎ C",
+            "properties": {
+                "ev3-c.brick": {
+                    "type": "string",
+                    "default": "active",
+                    "markdownDescription": "The brick EVƎ C uploads to and runs on: `active` for the brick that is active in EVƎ Cockpit, or a brick id as EVƎ Cockpit lists it."
+                },
+                "ev3-c.toolchain.path": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "markdownDescription": "Path to a Zig compiler to build with instead of the pinned one EVƎ C downloads on first use. Leave empty to use the pinned compiler. Run **EV3 C: Check Toolchain** to check it."
+                }
+            }
+        }
+    },
     "scripts": {
         "compile": "tsc",
         "lint": "eslint src --ext .ts",
