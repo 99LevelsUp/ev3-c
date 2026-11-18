@@ -29,7 +29,7 @@ Each run leaves a run folder on the brick recording how the program ended and wh
 ### Problem Frame
 
 Native code on the original EV3 firmware is usually started the ev3duder way: a tiny `.rbf` whose bytecode hands a shell command to the firmware's `opSYSTEM`, starts the binary in the background, waits one second, and ends.
-After that second nothing connects the running binary to the brick's program slot.
+After that second nothing connects the running binary to the brick's user slot.
 The brick and the cockpit report "not running" while the robot drives, cockpit's Stop has nothing to stop, and killing the process needs a shell, which cockpit allows only in full mode.
 
 The launcher cannot simply wait for the program either.
@@ -76,7 +76,7 @@ For a child moving on from Blockly, a robot that keeps driving after the program
 - R3. EVƎ C generates a launcher `.rbf` for each program; the launcher can be started from the brick's file menu and through cockpit's `runProgram`.
 - R4. The launcher starts the supervisor in the background and stays in the user slot until the program has ended, without blocking the VM while it waits; it changes permissions only on its own project files and touches nothing outside the project folder.
 - R5. The supervisor starts the user program as its child process and passes it the path of the current run folder.
-- R6. EVƎ C uploads the program, the launcher, and the supervisor into the project folder under `/home/root/lms2012/prjs/` through cockpit's `writeFile`, with every brick path shorter than 60 bytes, and recovers from a failed upload by uploading again.
+- R6. EVƎ C uploads the program, the launcher, and the supervisor into the project folder under `/home/root/lms2012/prjs/` through cockpit's `writeFile`, and recovers from a failed upload by uploading again; every brick path EVƎ C passes to cockpit, including run-folder files it reads or removes, is shorter than 60 bytes.
 
 **Run and stop**
 
@@ -95,6 +95,10 @@ For a child moving on from Blockly, a robot that keeps driving after the program
 - R16. Retention and cleanup delete only that project's run folders and never the folder of a program that is running.
 - R17. EVƎ C offers commands that delete a project's run folders, either all of them or all but the last N, through cockpit's `remove`.
 - R18. The run-folder layout reserves a place for a list of files the program marks for return (see Defined for After v1).
+- R19. The supervisor caps each captured output stream at a size limit embedded at build time next to the retention rule, and the run result says when output was truncated.
+- R20. ev3lib switches the program's stdout and stderr to line-by-line writing before `main` runs, so output printed before a crash or a stop reaches the run folder.
+- R21. EVƎ C lists the project's run folders on the brick and shows the results of any listed run, including runs started from the brick menu; a run EVƎ C did not observe is shown by its run number without a PC-side start time.
+- R22. The run number comes from a per-project counter kept outside the run folders, so retention and cleanup never cause a number to be reused.
 
 ```mermaid
 sequenceDiagram
@@ -135,9 +139,9 @@ sequenceDiagram
   - **Covered by:** R1, R2, R3, R6, R15
 - F2. Run to a normal end
   - **Trigger:** The author starts the program from EVƎ C or from the brick menu.
-  - **Steps:** The launcher starts in the user slot and starts the supervisor; the supervisor applies retention, creates the run folder, and starts the program; the program ends; the supervisor records the result; the launcher ends the slot; the firmware stops the motors; cockpit reports "stopped"; EVƎ C reads the run results.
+  - **Steps:** The launcher starts in the user slot and starts the supervisor; the supervisor applies retention, creates the run folder, and starts the program; the program ends; the supervisor stops the motors and records the result; the launcher ends the slot; the firmware stops the motors; cockpit reports "stopped"; EVƎ C reads the run results.
   - **Outcome:** The author sees the exit code and output.
-  - **Covered by:** R4, R5, R8, R9, R13, R14, R15
+  - **Covered by:** R4, R5, R8, R9, R11, R13, R14, R15
 - F3. Stop
   - **Trigger:** Stop or Emergency Stop in EVƎ C, or Back on the brick.
   - **Steps:** The user slot ends; the firmware stops the motors; the supervisor notices, terminates the program's process group, stops the motors again, and records the result.
@@ -145,21 +149,23 @@ sequenceDiagram
   - **Covered by:** R7, R10, R11, R12, R14
 - F4. Crash
   - **Trigger:** The program dies on a signal.
-  - **Steps:** The supervisor records the signal; the launcher ends the slot; the firmware stops the motors.
+  - **Steps:** The supervisor stops the motors and records the signal; the launcher ends the slot; the firmware stops the motors.
   - **Outcome:** The run results show the crash signal.
   - **Covered by:** R9, R11, R14
 
 ### Acceptance Examples
 
-- AE1. **Covers R8, R9, R14.** Given a program that starts a motor and then dereferences a null pointer, when it crashes, then the motor stops, cockpit and EVƎ C show "not running", and the run results show the crash signal.
+- AE1. **Covers R8, R9, R11, R14, R20.** Given a program that starts a motor, prints a line, and then dereferences a null pointer, when it crashes, then the motor stops, cockpit and EVƎ C show "not running", and the run results show the printed line and the crash signal.
 - AE2. **Covers R7, R10, R11.** Given a program in an endless loop that keeps setting motor power and cockpit in safe mode, when the author presses Stop in EVƎ C, then the program ends, the motors stay stopped, and no shell command or full mode was needed.
 - AE3. **Covers R12.** Given a program that did not take over Back, when Back is pressed, then the program stops as in AE2. Given a program that took over Back, when Back is pressed briefly, then the program receives the press and keeps running; when Back is held, then the program stops.
 - AE4. **Covers R15, R16.** Given the rule "keep the last 5 runs" and five existing run folders, when a new run starts, then the oldest run folder is deleted before the new one appears, and nothing outside the project's runs folder changes.
 - AE5. **Covers R16, R17.** Given a running program, when the author deletes all runs of the project, then every run folder except the running program's own folder is deleted.
+- AE6. **Covers R21, R22.** Given a program started from the brick menu while EVƎ C is disconnected, when EVƎ C reconnects and the author lists the project's runs, then that run appears with its run number, its result, and no PC-side start time.
+- AE7. **Covers R19.** Given a program that prints in an endless loop, when it is stopped, then its captured output is no larger than the build-time limit and the run result says the output was truncated.
 
 ### Success Criteria
 
-- v1 is accepted on a real brick in cockpit's safe mode, not only against the cockpit mock: F1 to F4 and AE1 to AE5 pass on hardware.
+- v1 is accepted on a real brick in cockpit's safe mode, not only against the cockpit mock: F1 to F4 and AE1 to AE7 pass on hardware.
 
 ### Defined for After v1
 
@@ -199,8 +205,9 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 - How the supervisor notices that the slot has ended: a heartbeat file in RAM, end-of-file on a pipe the launcher holds open, or another signal. The pipe variant risks blocking the VM on open and killing it with `SIGPIPE`.
 - How ev3lib asks the launcher to block Back, and whether the program can release the block again.
 - How the launcher learns that the program has ended (a marker the supervisor removes, `/proc/<pid>`, or a status file) and how often it checks.
-- Whether each project carries its own supervisor copy or bricks share one, and how supervisor versions are checked.
-- Default retention values and the run-folder layout and result format.
+- How supervisor versions are checked.
+- Default retention values, the default output-size limit, and the run-folder layout and result format.
+- How the run-folder layout and the maximum project-name length fit under cockpit's 60-byte path limit.
 - How EVƎ C's Emergency Stop relates to cockpit's own emergency stop command, so the palette does not offer the same action twice.
 
 ### Sources / Research
