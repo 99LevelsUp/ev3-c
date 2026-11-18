@@ -1,0 +1,10 @@
+{
+    "folders": [
+        { "path": "ae-crash" },
+        { "path": "ae-loop" },
+        { "path": "ae-back" },
+        { "path": "ae-print" },
+        { "path": "ae-quick" },
+        { "path": "../../../templates/hello" }
+    ]
+}

@@ -18,6 +18,7 @@ out/
 # src/core/build/ is source and must stay tracked)
 /build/
 /templates/*/build/
+/tests/hardware/programs/*/build/
 *.o
 *.a
 *.so
