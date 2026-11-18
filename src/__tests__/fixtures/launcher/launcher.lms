@@ -1,0 +1,87 @@
+// EVƎ C launcher: the source of the golden bytes for the TypeScript launcher template
+// (src/core/launcher/launcherTemplate.ts). Assemble it with LEGO's lmsasm through
+// scripts/regen-launcher-golden.cjs; the template must produce the same bytes for the
+// retention rule "keep the last 5 runs" and a 64 KiB output cap.
+//
+// The launcher keeps the user slot alive while the supervisor runs the program:
+//   1. build the project folder with GET_FOLDERNAME and every marker path from it
+//      (.run run marker, .bak Back request, .tok slot token);
+//   2. remove stale .run and .bak, recreate .tok and keep it open for the whole run;
+//   3. start <folder>/sup in the background, once, with the folder, the retention rule,
+//      and the output cap as arguments;
+//   4. wait up to 6 s for .run, then read the supervisor's PID from it once;
+//   5. every 100 ms check .run and /proc/<pid>, and follow .bak with SET_BACK_BLOCK;
+//   6. end when .run or the supervisor's process is gone.
+// No file is closed inside the loop, because every bytecode close runs a global sync().
+//
+// Buffer sizes: STRINGS ADD writes into a local with an unbounded sprintf, so every
+// buffer holds the longest value the firmware allows. A program's folder is shorter
+// than 84 bytes (vmPATHSIZE), so Folder never truncates and every path built from it fits.
+
+vmthread  MAIN
+{
+  DATAS   Folder 84
+  DATAS   RunPath 120
+  DATAS   BakPath 120
+  DATAS   TokPath 120
+  DATAS   T1 256
+  DATAS   T2 256
+  DATAS   Cmd 256
+  DATAS   Pid 16
+  DATAS   Proc 32
+  DATA16  hTok
+  DATA16  hRun
+  DATA32  Size
+  DATA32  Status
+  DATA32  Timer
+  DATA8   Flag
+  DATA8   BackOn
+  DATA8   Count
+
+  FILENAME(GET_FOLDERNAME,84,Folder)
+  STRINGS(ADD,Folder,'/.run',RunPath)
+  STRINGS(ADD,Folder,'/.bak',BakPath)
+  STRINGS(ADD,Folder,'/.tok',TokPath)
+
+  FILE(REMOVE,RunPath)
+  FILE(REMOVE,BakPath)
+  FILE(REMOVE,TokPath)
+  FILE(OPEN_WRITE,TokPath,hTok)
+
+  STRINGS(ADD,Folder,'/sup ',T1)
+  STRINGS(ADD,T1,Folder,T2)
+  STRINGS(ADD,T2,' keep=5 cap=65536 &',Cmd)
+  SYSTEM(Cmd,Status)
+
+  MOVE8_8(0,Count)
+WaitStart:
+  TIMER_WAIT(100,Timer)
+  TIMER_READY(Timer)
+  FILENAME(EXIST,RunPath,Flag)
+  JR_TRUE(Flag,Started)
+  ADD8(Count,1,Count)
+  JR_LT8(Count,60,WaitStart)
+  JR(Done)
+
+Started:
+  FILE(OPEN_READ,RunPath,hRun,Size)
+  FILE(READ_TEXT,hRun,0,15,Pid)
+  FILE(CLOSE,hRun)
+  STRINGS(ADD,'/proc/',Pid,Proc)
+  MOVE8_8(0,BackOn)
+
+Poll:
+  TIMER_WAIT(100,Timer)
+  TIMER_READY(Timer)
+  FILENAME(EXIST,RunPath,Flag)
+  JR_FALSE(Flag,Done)
+  FILENAME(EXIST,Proc,Flag)
+  JR_FALSE(Flag,Done)
+  FILENAME(EXIST,BakPath,Flag)
+  JR_EQ8(Flag,BackOn,Poll)
+  MOVE8_8(Flag,BackOn)
+  UI_BUTTON(SET_BACK_BLOCK,BackOn)
+  JR(Poll)
+
+Done:
+}
