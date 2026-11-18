@@ -12,3 +12,13 @@ export {
 export type { ProjectConfig } from './project/projectConfig';
 export { buildLauncher, SUPERVISOR_FILE } from './launcher/launcherTemplate';
 export type { LauncherOptions, RetentionRule } from './launcher/launcherTemplate';
+export { brickErrorCode, PacedReader, READ_INTERVAL_MS, systemClock } from './brickPort';
+export type { BrickEntry, BrickEvent, BrickFileReader, BrickPort, Clock, ProgramState, Subscription } from './brickPort';
+export { BrickOperationError, deploy } from './brick/deploy';
+export type { DeployReport } from './brick/deploy';
+export { emergencyStop, RESULT_WAIT_MS, runProject, stopProgram } from './brick/runControl';
+export type { RunOutcome, RunProjectOptions } from './brick/runControl';
+export { listRuns, parseRunRecord, readRunRecord, readRunResult, resultFromRecord, RunRecordError } from './brick/runResults';
+export type { RunEnd, RunRecord, RunResult, RunSummary } from './brick/runResults';
+export { brickProjectDir, deleteRuns, listRunNumbers, runDir, runsDir } from './brick/runFolders';
+export type { DeleteRunsOptions, DeleteRunsReport } from './brick/runFolders';
