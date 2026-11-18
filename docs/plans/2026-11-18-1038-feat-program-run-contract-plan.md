@@ -196,7 +196,7 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 - The EVƎ C CLI, which will drive the cockpit CLI or daemon and reuse the core from R2.
 - Brick chains (daisy chain, Bluetooth) and projects with several robots and shared libraries.
 - The full ev3lib API from the design notes; v1 ships only the surface the contract and its acceptance examples need (KTD14).
-- A program that outlives a crashed supervisor; the firmware still stops the motors when the slot ends, and v1 accepts the orphaned process as a residual risk.
+- A program that outlives a crashed supervisor: the launcher notices the supervisor is gone and ends the slot, so the firmware stops the motors, but the orphaned program can restart them until Emergency Stop or a brick restart. v1 accepts this as a residual risk.
 
 **Outside this product's identity**
 
@@ -205,7 +205,6 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 **Considered and not built**
 
 - Working around a project folder that lives in RAM until a clean shutdown (for example forcing a flush after upload). If U1 confirms it, it is a firmware property and v1 documents it; evidence that students lose work in practice would change the call.
-- A supervisor-liveness check in the launcher. If the supervisor itself dies, the slot stays "running" until the author presses Stop or Back, which still works; a field report of stuck slots would change the call.
 - Dynamic linking against an ev3lib installed on the brick. Static binaries are small enough with musl, and dynamic linking would tie every program to a brick-side library version.
 
 ### Dependencies / Assumptions
@@ -242,17 +241,17 @@ Returning files the program creates, in the shape agreed for the run folder (R18
   1. Build the project folder path with `FILENAME GET_FOLDERNAME`. Every marker path the launcher uses is that folder plus a short dot-name: `.tok` (slot token), `.run` (run marker), `.bak` (Back request). The firmware resolves a bare name starting with a dot against its own working directory, and it refuses an extension of four or more characters, in which case a file open retries forever.
   2. Remove stale `.run` and `.bak`, delete `.tok`, then create `.tok` and keep it open for the whole run; never close it.
   3. Call `opSYSTEM` once to start the supervisor in the background, passing the project folder, the retention rule, and the output cap as arguments.
-  4. Wait up to 6 s for `.run` to appear; if it never does, end the slot.
-  5. Every ~100 ms: test `.run` with `FILENAME EXIST`, and set or clear the Back block with `UI_BUTTON SET_BACK_BLOCK` when `.bak` appears or disappears.
-  6. End when `.run` is gone.
+  4. Wait up to 6 s for `.run` to appear; if it never does, end the slot. Then read the supervisor's PID from `.run` once and build the path `/proc/<pid>` with `STRINGS ADD`.
+  5. Every ~100 ms: test `.run` and `/proc/<pid>` with `FILENAME EXIST`, and set or clear the Back block with `UI_BUTTON SET_BACK_BLOCK` when `.bak` appears or disappears.
+  6. End when `.run` is gone or the supervisor's process has disappeared, so a crashed supervisor still ends the slot and the firmware stops the motors.
 
-  No file is closed inside the loop, because every bytecode close runs a global `sync()`. Confirm the loop cost and the dot-name rules in U1. Governs R4, R12, R15, R19.
+  No file is closed inside the loop, because every bytecode close runs a global `sync()`; the single PID read in step 4 is the only close after start-up. Confirm the loop cost and the dot-name rules in U1. Governs R4, R12, R15, R19.
 - KTD7. **The supervisor detects slot end through the slot token, without writes.** When the slot ends, the VM closes `.tok`. At start-up the supervisor finds the `lms2012` process and records the device and inode of `.tok` among the VM's open file descriptors. If the VM does not hold it, the supervisor records "slot ended before start" and starts no program. Afterwards it polls every ~100 ms, and the slot has ended when the VM no longer holds a descriptor with that inode; a `.tok` recreated under the same path by a newer launcher does not count. Fallback if U1 disproves descriptor polling: the launcher appends one byte per tick to the already-open token and the supervisor watches the size stop growing. A FIFO was rejected because opening it blocks the VM and a write without a reader kills the VM with `SIGPIPE`. Confirm in U1. Governs R10.
 - KTD8. **The supervisor owns its own process group and a brick-wide run lock.**
   - It calls `setsid()` to leave the VM's process group, and the program gets a group of its own: the child calls `setpgid(0,0)` after `fork()` and the parent repeats `setpgid(child, child)` to close the race. Group signals go only to the program's group, never to the supervisor's, so they reach neither the VM nor the supervisor.
   - It closes inherited descriptors and resets signal dispositions before `exec`.
   - It takes an `flock` on one lock file in `/home/root/lms2012/prjs/` and holds it until its completion record is written. A new supervisor waits up to 3 s for that lock, so the previous run's final motor stop (R11) can never hit the next run, including runs of other projects.
-  - It creates `.run` only after it holds the lock, and removes `.run` and `.bak` just before releasing the lock, so a stale Back request never blocks Back in the next run.
+  - It creates `.run` with its own PID only after it holds the lock, and removes `.run` and `.bak` just before releasing the lock, so a stale Back request never blocks Back in the next run.
 
   Governs R10, R11.
 - KTD9. **Termination is SIGTERM, a 500 ms grace period, then SIGKILL, all to the program's group, and the group is always emptied.** On slot end the supervisor waits until the whole group is gone, not just the direct child. When the program exits on its own, the supervisor still sends SIGKILL to the program's group, so a helper process the program forked cannot keep driving motors after the run. Output pipes are drained with a 1 s deadline. Motors are stopped by writing the firmware's program-stop command to `/dev/lms_pwm`, as the firmware's own stop does. Governs R10, R11.
@@ -537,6 +536,7 @@ docs/spikes/                  brick spike findings
 - A child that forks a grandchild: terminating the group ends both, and the supervisor survives to write `res`.
 - A child that forks a motor-driving grandchild and then exits on its own: the grandchild is killed before `res` is written.
 - A `.req` present at start is deleted and its launch ID appears in `res`; without `.req`, `res` has no launch ID.
+- `.run` contains the supervisor's PID as soon as it exists.
 - The fake PWM device receives a stop command after the child is gone in every case above.
 - Output beyond the cap is not written and `res` flags truncation for that stream only.
 - With "keep the last 5 runs" and runs 1–5 present, starting run 6 deletes run 1 before creating run 6.
@@ -573,6 +573,7 @@ docs/spikes/                  brick spike findings
 - A 15-byte project name produces a launcher whose path and command fit their limits; a 16-byte name is rejected by the caller (R23).
 - Every file name the template uses passes the firmware's path, name, and extension length rules, and every marker path is built from the folder name rather than a bare dot-name.
 - The supervisor command carries the project folder, retention rule, and output cap in the order U5 expects.
+- The loop's exit condition tests both `.run` and the `/proc/<pid>` path built from the PID read out of `.run`.
 
 **Verification:** the generated launcher matches the golden file, and the U1 probe behavior is reproduced on the brick in U10.
 
@@ -687,6 +688,7 @@ docs/spikes/                  brick spike findings
 - Covers AE6. Brick-menu start while disconnected appears after reconnect without a PC time.
 - Covers AE7. Endless printing stops at the cap and is marked truncated.
 - Stop immediately followed by Run starts the new run only after the previous supervisor finished, and the new program's motors run.
+- Killing the supervisor while the program drives a motor (shell in full mode, for this scenario only) ends the slot within about a second and the firmware stops the motor.
 
 **Verification:** `tests/hardware/acceptance.md` records a pass for every scenario on a real brick, with the brick firmware version and cockpit version.
 
