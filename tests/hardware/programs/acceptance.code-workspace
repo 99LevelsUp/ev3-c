@@ -5,6 +5,7 @@
         { "path": "ae-back" },
         { "path": "ae-print" },
         { "path": "ae-quick" },
+        { "path": "diag-motor" },
         { "path": "../../../templates/hello" }
     ]
 }

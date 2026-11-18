@@ -56,10 +56,18 @@ export async function deploy(port: BrickPort, artifacts: readonly BuildArtifact[
     return report;
 }
 
+/**
+ * EVƎ Cockpit can drop its route to a brick for 5–10 ms after a failed send and reroute
+ * at once; a command issued in that gap fails as not connected. Retrying right away often
+ * lands in the same gap, so the retry waits a little first.
+ */
+const RETRY_DELAY_MS = 250;
+
 async function upload(port: BrickPort, brickPath: string, data: Uint8Array): Promise<void> {
     try {
         await port.writeFile(brickPath, data);
     } catch {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         try {
             await port.writeFile(brickPath, data);
         } catch (error) {
