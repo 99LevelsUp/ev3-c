@@ -32,7 +32,8 @@ export const defaultCore = {
 export type CoreFunctions = typeof defaultCore;
 
 export interface HostEnvironment {
-    output: vscode.OutputChannel;
+    /** A log channel: every line carries a timestamp and a level, like EVƎ Cockpit's log. */
+    output: vscode.LogOutputChannel;
     /** The extension's install folder; ev3lib's headers and the runtime are below it. */
     packageRoot: string;
     /** Where the downloaded compiler is kept. */
@@ -69,7 +70,7 @@ export function registerProjectCommands(env: HostEnvironment): vscode.Disposable
             );
             const where = compiler.origin === 'override' ? 'set in "ev3-c.toolchain.path"'
                 : compiler.origin === 'download' ? `version ${compiler.version ?? '?'}, downloaded now` : `version ${compiler.version ?? '?'}`;
-            env.output.appendLine(`Compiler: ${compiler.path} (${where})`);
+            env.output.info(`Compiler:${compiler.path} (${where})`);
             void vscode.window.showInformationMessage(`EVƎ C's compiler is ready (${where}).`);
         }),
     ];
@@ -95,14 +96,14 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             const { port, reader } = bricks.current();
             await upload(env, port, built);
             const project = built.project.name;
-            env.output.appendLine(`Running "${project}". Stop it with "EV3 C: Stop" or the brick's Back button.`);
+            env.output.info(`Running "${project}". Stop it with "EV3 C: Stop" or the brick's Back button.`);
             const outcome = await env.core.runProject({ port, reader, project, launches: bricks.launches });
             env.output.show(true);
             if (outcome.kind === 'result') {
                 writeLines(env, formatRunResult(project, outcome.result));
                 void vscode.window.showInformationMessage(`"${project}" run ${outcome.result.run}: ${howItEnded(outcome.result.record)}.`);
             } else {
-                writeLines(env, formatNoResult(project, outcome.launchId, outcome.startedAt));
+                writeLines(env, formatNoResult(project, outcome.launchId, outcome.startedAt), 'warn');
                 void vscode.window.showWarningMessage(`"${project}" ended, but no result was recorded on the brick.`);
             }
         }),
@@ -156,7 +157,8 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             }
             const report = await env.core.deleteRuns(bricks.current().port, project, { keepLast });
             const parts = [`deleted ${report.deleted.length}`, `kept ${report.kept.length}`];
-            env.output.appendLine(`Run folders of "${project}": deleted [${report.deleted.join(', ')}], kept [${report.kept.join(', ')}]`
+            const level = report.stillPresent.length > 0 ? 'warn' : 'info';
+            env.output[level](`Run folders of "${project}": deleted [${report.deleted.join(', ')}], kept [${report.kept.join(', ')}]`
                 + (report.stillPresent.length > 0 ? `, could not delete [${report.stillPresent.join(', ')}]` : ''));
             if (report.stillPresent.length > 0) {
                 void vscode.window.showWarningMessage(
@@ -175,7 +177,7 @@ function register(env: HostEnvironment, id: string, action: () => Promise<void>)
             await action();
         } catch (error) {
             const code = typeof error === 'object' && error !== null && 'code' in error ? ` [${String((error as { code: unknown }).code)}]` : '';
-            env.output.appendLine(`${id} failed${code}: ${error instanceof Error ? error.message : String(error)}`);
+            env.output.error(`${id} failed${code}: ${error instanceof Error ? error.message : String(error)}`);
             void vscode.window.showErrorMessage(userMessage(error));
         }
     });
@@ -209,7 +211,7 @@ async function projectFolder(): Promise<string | undefined> {
 }
 
 async function build(env: HostEnvironment, dir: string): Promise<Extract<BuildResult, { ok: true }>> {
-    env.output.appendLine(`Building ${dir}`);
+    env.output.info(`Building ${dir}`);
     const result = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `EVƎ C: building ${path.basename(dir)}` },
         () => env.core.buildProject({
@@ -219,13 +221,13 @@ async function build(env: HostEnvironment, dir: string): Promise<Extract<BuildRe
         }),
     );
     if (result.diagnostics.trim() !== '') {
-        env.output.appendLine(result.diagnostics.trimEnd());
+        env.output[result.ok ? 'warn' : 'error'](result.diagnostics.trimEnd());
     }
     if (!result.ok) {
         env.output.show(true);
         throw new Error('The build failed: the compiler reported errors. See the "EVƎ C" output.');
     }
-    env.output.appendLine(`Built "${result.project.name}": ${result.artifacts.map(a => a.brickPath).join(', ')}`);
+    env.output.info(`Built "${result.project.name}": ${result.artifacts.map(a => a.brickPath).join(', ')}`);
     return result;
 }
 
@@ -234,13 +236,13 @@ async function upload(env: HostEnvironment, port: BrickPort, built: Extract<Buil
         { location: vscode.ProgressLocation.Notification, title: `EVƎ C: uploading "${built.project.name}"` },
         () => env.core.deploy(port, built.artifacts),
     );
-    env.output.appendLine(`Uploaded [${report.uploaded.map(a => a.brickPath).join(', ')}], unchanged [${report.unchanged.map(a => a.brickPath).join(', ')}]`);
+    env.output.info(`Uploaded [${report.uploaded.map(a => a.brickPath).join(', ')}], unchanged [${report.unchanged.map(a => a.brickPath).join(', ')}]`);
     void vscode.window.showInformationMessage(
         `EVƎ C uploaded "${built.project.name}": ${report.uploaded.length} file(s) uploaded, ${report.unchanged.length} unchanged.`);
 }
 
 function reportStopped(env: HostEnvironment, what: string, running: boolean): void {
-    env.output.appendLine(`${what}: the brick reports ${running ? 'a program still running' : 'no program running'}.`);
+    env.output[running ? 'warn' : 'info'](`${what}: the brick reports ${running ? 'a program still running' : 'no program running'}.`);
     if (running) {
         void vscode.window.showWarningMessage(`${what} was sent, but the brick still reports a running program.`);
     }
@@ -269,8 +271,8 @@ async function askKeepLast(project: string): Promise<number | undefined> {
     return answer === undefined ? undefined : Number(answer.trim());
 }
 
-function writeLines(env: HostEnvironment, lines: readonly string[]): void {
+function writeLines(env: HostEnvironment, lines: readonly string[], level: 'info' | 'warn' = 'info'): void {
     for (const line of lines) {
-        env.output.appendLine(line);
+        env.output[level](line);
     }
 }

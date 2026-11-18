@@ -14,6 +14,7 @@ interface StubState {
     messages: { level: string; text: string }[];
     commands: Map<string, unknown>;
     output: string[];
+    log: { level: string; line: string }[];
     statusBarItems: { text: string; visible: boolean; command?: string }[];
     config: Map<string, unknown>;
     workspaceFolders: unknown;
@@ -120,7 +121,7 @@ test('Build in an untrusted workspace is refused with a message and starts no co
     projectFolder({ name: 'hello' });
     stub.__state.isTrusted = false;
     const builds: BuildProjectOptions[] = [];
-    const output = vscode.window.createOutputChannel('EVƎ C');
+    const output = vscode.window.createOutputChannel('EVƎ C', { log: true });
     registerProjectCommands({
         output,
         packageRoot: os.tmpdir(),
@@ -137,6 +138,10 @@ test('Build in an untrusted workspace is refused with a message and starts no co
     assert.deepEqual(builds, []);
     assert.equal(stub.__state.messages.length, 1);
     assert.match(stub.__state.messages[0].text, /trust/i);
+    // The failure lands in the log at error level, so it lines up with EVƎ Cockpit's log.
+    assert.equal(stub.__state.log.length, 1);
+    assert.equal(stub.__state.log[0].level, 'error');
+    assert.match(stub.__state.log[0].line, /ev3-c\.build failed/);
 });
 
 test('Upload and Run in an untrusted workspace are refused and call no cockpit method', async () => {

@@ -9,7 +9,7 @@ import { ProgramStatusBar } from './host/statusBar';
 // version 1; without it EVƎ C says so once and registers none of them.
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    const output = vscode.window.createOutputChannel('EVƎ C');
+    const output = vscode.window.createOutputChannel('EVƎ C', { log: true });
     context.subscriptions.push(output);
     const env: HostEnvironment = {
         output,
@@ -21,7 +21,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const cockpit = await connectCockpit(id => vscode.extensions.getExtension(id));
     if (!cockpit.ok) {
-        output.appendLine(cockpit.problem);
+        output.error(cockpit.problem);
         void vscode.window.showErrorMessage(cockpit.problem);
         return;
     }

@@ -27,6 +27,8 @@ function freshState() {
         commands: new Map(),
         /** Lines written to any output channel. */
         output: [],
+        /** Lines written to a log channel, with their level. */
+        log: [],
         statusBarItems: [],
         /** Setting values by full key, e.g. "ev3-c.brick". */
         config: new Map(),
@@ -66,6 +68,11 @@ const window = {
         name,
         appendLine: (line) => { state.output.push(line); },
         append: (text) => { state.output.push(text); },
+        trace: (line) => { state.output.push(line); state.log.push({ level: 'trace', line }); },
+        debug: (line) => { state.output.push(line); state.log.push({ level: 'debug', line }); },
+        info: (line) => { state.output.push(line); state.log.push({ level: 'info', line }); },
+        warn: (line) => { state.output.push(line); state.log.push({ level: 'warn', line }); },
+        error: (line) => { state.output.push(line); state.log.push({ level: 'error', line }); },
         show: () => undefined,
         dispose: () => undefined,
     }),
