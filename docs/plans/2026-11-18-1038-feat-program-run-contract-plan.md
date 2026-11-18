@@ -23,7 +23,7 @@ execution: code
 ### Summary
 
 EVƎ C v1 builds a C program with ev3lib, generates a launcher (`.rbf`), ships a small native supervisor, and uploads all three into the project folder through EVƎ Cockpit.
-The launcher keeps the brick's user slot alive exactly as long as the program runs, so the brick, the cockpit, and EVƎ C agree on whether it runs, and Stop works in cockpit's safe mode.
+The launcher keeps the brick's user slot alive while the program runs and ends it when the program ends, so the brick, the cockpit, and EVƎ C agree on whether it runs, and Stop works in cockpit's safe mode.
 Each run leaves a run folder on the brick recording how the program ended and what it printed, and EVƎ C reads it back.
 
 ### Problem Frame
@@ -81,16 +81,16 @@ For a child moving on from Blockly, a robot that keeps driving after the program
 **Run and stop**
 
 - R7. EVƎ C exposes Run, Stop, and Emergency Stop as commands that call cockpit's `runProgram`, `stopProgram`, and `emergencyStop`, and adds no stop mechanism of its own.
-- R8. The run state EVƎ C shows is the user-slot state cockpit reports, and that state is "running" exactly while the user program is alive.
+- R8. The run state EVƎ C shows is the user-slot state cockpit reports: "running" from the launcher's start until the slot ends, which happens only after the program has ended (R9) or the slot was stopped (R10), so it can lag the program's real start and end by the launcher's and supervisor's detection delay.
 - R9. When the user program ends for any reason (return from `main`, `exit`, a crash signal, or `SIGKILL`), the supervisor records how it ended and the launcher then ends the slot.
 - R10. When the slot ends for any reason (cockpit Stop, emergency stop, Back, or the launcher ending), the supervisor terminates the program's whole process group as soon as it notices.
 - R11. After the program is gone, the supervisor stops all motors once more before it exits.
-- R12. Back stops the program by default; a program may block Back through ev3lib and handle the press itself.
+- R12. Back stops the program by default. A program may take over short presses of Back through ev3lib: ev3lib requests the block and the launcher applies it, because only bytecode in the user slot can block Back. A long press of Back always stops the program.
 
 **Run results and run folders**
 
 - R13. Each run gets a new run folder inside the project's runs folder on the brick, named by an increasing run number.
-- R14. The supervisor writes the program's exit code or terminating signal and its stdout and stderr into the run folder; after the run ends, EVƎ C reads them and shows them to the author together with the PC-side start time.
+- R14. The supervisor writes the program's exit code or terminating signal and its stdout and stderr into the run folder, and writes a completion record as its very last step. After the slot stops, EVƎ C waits for that record within cockpit's read rate, then shows the results to the author with the PC-side start time, or reports that no result was recorded if the record never appears.
 - R15. The build embeds a retention rule, either "keep the last N runs" or "keep runs up to M megabytes", and the supervisor applies it before it creates the new run folder.
 - R16. Retention and cleanup delete only that project's run folders and never the folder of a program that is running.
 - R17. EVƎ C offers commands that delete a project's run folders, either all of them or all but the last N, through cockpit's `remove`.
@@ -112,18 +112,18 @@ sequenceDiagram
   S->>P: start as child with run folder path
   alt program ends (return, exit, crash, SIGKILL)
     P-->>S: exit status
-    S->>S: record result, stop motors
+    S->>S: stop motors, record result, write completion record
     S-->>L: program ended
     L->>V: slot ends
   else Stop, emergency stop, or Back
     C->>V: stop user slot
     V->>L: slot ends
     S->>P: terminate process group
-    S->>S: record result, stop motors
+    S->>S: stop motors, record result, write completion record
   end
   V->>V: UI issues STOP_ALL for all motors
   C-->>E: state changed: stopped
-  E->>C: readFile(run results)
+  E->>C: wait for completion record, then readFile(run results)
 ```
 
 ### Key Flows
@@ -153,7 +153,7 @@ sequenceDiagram
 
 - AE1. **Covers R8, R9, R14.** Given a program that starts a motor and then dereferences a null pointer, when it crashes, then the motor stops, cockpit and EVƎ C show "not running", and the run results show the crash signal.
 - AE2. **Covers R7, R10, R11.** Given a program in an endless loop that keeps setting motor power and cockpit in safe mode, when the author presses Stop in EVƎ C, then the program ends, the motors stay stopped, and no shell command or full mode was needed.
-- AE3. **Covers R12.** Given a program that did not take over Back, when Back is pressed, then the program stops as in AE2. Given a program that took over Back, when Back is pressed, then the program receives the press and keeps running.
+- AE3. **Covers R12.** Given a program that did not take over Back, when Back is pressed, then the program stops as in AE2. Given a program that took over Back, when Back is pressed briefly, then the program receives the press and keeps running; when Back is held, then the program stops.
 - AE4. **Covers R15, R16.** Given the rule "keep the last 5 runs" and five existing run folders, when a new run starts, then the oldest run folder is deleted before the new one appears, and nothing outside the project's runs folder changes.
 - AE5. **Covers R16, R17.** Given a running program, when the author deletes all runs of the project, then every run folder except the running program's own folder is deleted.
 
@@ -197,6 +197,7 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 **Deferred to Planning**
 
 - How the supervisor notices that the slot has ended: a heartbeat file in RAM, end-of-file on a pipe the launcher holds open, or another signal. The pipe variant risks blocking the VM on open and killing it with `SIGPIPE`.
+- How ev3lib asks the launcher to block Back, and whether the program can release the block again.
 - How the launcher learns that the program has ended (a marker the supervisor removes, `/proc/<pid>`, or a status file) and how often it checks.
 - Whether each project carries its own supervisor copy or bricks share one, and how supervisor versions are checked.
 - Default retention values and the run-folder layout and result format.
