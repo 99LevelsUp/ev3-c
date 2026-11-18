@@ -267,7 +267,7 @@ Returning files the program creates, in the shape agreed for the run folder (R18
 - KTD12. **EVƎ C ties a Run to its run number by reading the counter first.** Before `runProgram`, EVƎ C reads `run/next`. After cockpit reports "stopped", or `runProgram` returns without a running state, or the brick reconnects, it polls `run/<n>/res` at most once per second for up to 10 s. If no record appears, it reports "no result recorded" and leaves the run listed for later. Governs R14, R21.
 - KTD13. **Deploy compares MD5 before uploading.** EVƎ C lists the project folder, compares cockpit's per-file MD5 with the local artifacts, and uploads only what differs. That skips the unchanged supervisor and doubles as its version check. Before any upload it asks `isProgramRunning` and refuses if a program runs (R24). Governs R6, R24.
 - KTD14. **ev3lib v1 is the minimum the contract needs.** The surface is init and exit, motor power and stop, line-buffered stdio set up before `main`, sleep, and the Back takeover request. A normal exit also stops the motors. Everything else from the design notes waits. Governs R12, R20.
-- KTD15. **Retention defaults are "keep the last 10 runs" and a 64 KiB cap per output stream.** A megabyte rule smaller than two capped streams is rejected at build time, because one run could exceed it. Revisit the defaults if U1 finds a small RAM-backed project folder. Governs R15, R19.
+- KTD15. **Retention defaults are "keep the last 10 runs" and a 64 KiB cap per output stream.** The worst case is about 1.3 MB of run folders per project, which fits even the ~6 MB RAM-backed project folder the research suspects, while 64 KiB holds several thousand lines of debug output and stays a single small `readFile`. A megabyte rule smaller than two capped streams is rejected at build time, because one run could exceed it. Revisit the defaults if U1 measures less free space. Governs R15, R19.
 - KTD16. **Emergency Stop in EVƎ C calls cockpit's `emergencyStop` and nothing else.** It appears under the "EV3 C" category next to Run and Stop, so a duplicate of cockpit's own command is acceptable. Governs R7.
 
 ### High-Level Technical Design
@@ -643,8 +643,11 @@ docs/spikes/                  brick spike findings
 - Activation without cockpit, or with an API version other than 1, shows one clear error and registers no brick commands.
 - Each cockpit error code used by EVƎ C maps to a user message.
 - The status subscription is re-created after the adapter reports a disconnect and reconnect.
+- The adapter turns each `BrickPort` call into the matching cockpit call with the configured brick, and passes cockpit's error code through unchanged (checked against a fake cockpit API object).
+- Build in an untrusted workspace is refused with a message, and no compiler is started.
+- Run with no project folder open, or with an invalid project name, shows the validation message from the core and calls no cockpit method.
 
-**Verification:** the extension installs next to cockpit 0.2.394 and every command runs end to end against the cockpit mock for the parts the mock supports (state, listing, upload of small files).
+**Verification:** the extension installs next to cockpit 0.2.394, the adapter tests pass, and the commands that the cockpit mock supports (state, listing, upload of small files) work against it; Run, Stop, and results are verified on hardware in U10.
 
 ### U10. Hardware acceptance and starter template
 
