@@ -1,0 +1,38 @@
+{
+    "compiler": "zig",
+    "version": "0.14.1",
+    "versionNote": "Pinned to 0.14.1 on purpose: with Zig 0.17.1 any program that uses malloc fails to link for this target (missing __sync_val_compare_and_swap_1/4 and __sync_lock_test_and_set_1, which ARMv5 lacks), while 0.14.1 links it. Re-check this before moving to a newer release.",
+    "baseUrl": "https://ziglang.org/download/0.14.1/",
+    "baseUrlNote": "Official Zig downloads for now. To serve the archives from the project's own GitHub release mirror, change baseUrl only; file names and SHA-256 values stay the same.",
+    "hosts": {
+        "win32-x64": {
+            "file": "zig-x86_64-windows-0.14.1.zip",
+            "sha256": "554f5378228923ffd558eac35e21af020c73789d87afeabf4bfd16f2e6feed2c",
+            "entry": "zig-x86_64-windows-0.14.1/zig.exe"
+        },
+        "linux-x64": {
+            "file": "zig-x86_64-linux-0.14.1.tar.xz",
+            "sha256": "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
+            "entry": "zig-x86_64-linux-0.14.1/zig"
+        },
+        "darwin-arm64": {
+            "file": "zig-aarch64-macos-0.14.1.tar.xz",
+            "sha256": "39f3dc5e79c22088ce878edc821dedb4ca5a1cd9f5ef915e9b3cc3053e8faefa",
+            "entry": "zig-aarch64-macos-0.14.1/zig"
+        },
+        "darwin-x64": {
+            "file": "zig-x86_64-macos-0.14.1.tar.xz",
+            "sha256": "b0f8bdfb9035783db58dd6c19d7dea89892acc3814421853e5752fe4573e5f43",
+            "entry": "zig-x86_64-macos-0.14.1/zig"
+        }
+    },
+    "targetFlags": [
+        "-target", "arm-linux-musleabi",
+        "-mcpu=arm926ej_s",
+        "-static",
+        "-Os",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-Wl,--gc-sections"
+    ]
+}
