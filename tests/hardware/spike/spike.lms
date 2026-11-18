@@ -1,0 +1,74 @@
+// Brick spike probe launcher (assembled with LEGO's lmsasm; throwaway).
+//
+// Mirrors the planned launcher: build marker paths from the program's own folder,
+// recreate and hold the slot token, start the probe supervisor once in the background,
+// wait for its run marker, read its PID, then poll the run marker, /proc/<pid>, and the
+// Back request marker every 100 ms until the run marker or the supervisor disappears.
+
+vmthread  MAIN
+{
+  DATAS   Folder 64
+  DATAS   RunPath 80
+  DATAS   BakPath 80
+  DATAS   TokPath 80
+  DATAS   T1 160
+  DATAS   T2 160
+  DATAS   Cmd 160
+  DATAS   Pid 16
+  DATAS   Proc 32
+  DATA16  hTok
+  DATA16  hRun
+  DATA32  Size
+  DATA32  Status
+  DATA32  Timer
+  DATA8   Flag
+  DATA8   BackOn
+  DATA8   Count
+
+  FILENAME(GET_FOLDERNAME,64,Folder)
+  STRINGS(ADD,Folder,'/.run',RunPath)
+  STRINGS(ADD,Folder,'/.bak',BakPath)
+  STRINGS(ADD,Folder,'/.tok',TokPath)
+
+  FILE(REMOVE,RunPath)
+  FILE(REMOVE,BakPath)
+  FILE(REMOVE,TokPath)
+  FILE(OPEN_WRITE,TokPath,hTok)
+
+  STRINGS(ADD,Folder,'/probe_sup ',T1)
+  STRINGS(ADD,T1,Folder,T2)
+  STRINGS(ADD,T2,' &',Cmd)
+  SYSTEM(Cmd,Status)
+
+  MOVE8_8(0,Count)
+WaitStart:
+  TIMER_WAIT(100,Timer)
+  TIMER_READY(Timer)
+  FILENAME(EXIST,RunPath,Flag)
+  JR_TRUE(Flag,Started)
+  ADD8(Count,1,Count)
+  JR_LT8(Count,60,WaitStart)
+  JR(Done)
+
+Started:
+  FILE(OPEN_READ,RunPath,hRun,Size)
+  FILE(READ_TEXT,hRun,0,15,Pid)
+  FILE(CLOSE,hRun)
+  STRINGS(ADD,'/proc/',Pid,Proc)
+  MOVE8_8(0,BackOn)
+
+Poll:
+  TIMER_WAIT(100,Timer)
+  TIMER_READY(Timer)
+  FILENAME(EXIST,RunPath,Flag)
+  JR_FALSE(Flag,Done)
+  FILENAME(EXIST,Proc,Flag)
+  JR_FALSE(Flag,Done)
+  FILENAME(EXIST,BakPath,Flag)
+  JR_EQ8(Flag,BackOn,Poll)
+  MOVE8_8(Flag,BackOn)
+  UI_BUTTON(SET_BACK_BLOCK,BackOn)
+  JR(Poll)
+
+Done:
+}

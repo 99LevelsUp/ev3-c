@@ -1,0 +1,18 @@
+{
+    "name": "ev3-c-brick-spike",
+    "displayName": "EVƎ C brick spike",
+    "description": "Throwaway hardware probes for the EVƎ C run contract. Not shipped.",
+    "version": "0.0.1",
+    "publisher": "99LevelsUp",
+    "private": true,
+    "engines": { "vscode": "^1.90.0" },
+    "capabilities": { "untrustedWorkspaces": { "supported": true } },
+    "extensionDependencies": ["99LevelsUp.ev3-cockpit"],
+    "activationEvents": [],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            { "command": "ev3-c-brick-spike.run", "title": "EV3 C: Brick spike (hardware probes)" }
+        ]
+    }
+}
