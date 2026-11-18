@@ -14,8 +14,10 @@ out/
 *.vsix
 *.js.map
 
-# C build output
-build/
+# C build output (the repository's runtime build and starter projects built in place;
+# src/core/build/ is source and must stay tracked)
+/build/
+/templates/*/build/
 *.o
 *.a
 *.so

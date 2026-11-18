@@ -1,0 +1,5 @@
+{
+    "name": "hello",
+    "retention": { "keepRuns": 5 },
+    "outputCapKiB": 64
+}
