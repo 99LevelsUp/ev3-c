@@ -121,8 +121,8 @@ export function createBrickPort(client: CockpitClient, brickId: string): Cockpit
 
 /**
  * Reads a brick file through a private temporary file the daemon writes. An inline read
- * is refused above 64 KiB only after the whole file has crossed the link, and a run's
- * output may be larger (`outputCapKiB`), so every read goes to a local file instead.
+ * is refused above 64 KiB, and a run's output may be larger (`outputCapKiB`), so every
+ * read goes to a local file, whatever its size.
  */
 async function readThroughLocalFile(client: CockpitClient, brick: string, brickPath: string): Promise<Uint8Array> {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ev3c-read-'));

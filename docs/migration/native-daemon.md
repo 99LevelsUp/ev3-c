@@ -31,7 +31,7 @@ from current cockpit builds (see "Answers from the cockpit").
 | `onBricksChanged` | `client.onBricksChanged` | `cockpitAdapter.ts`, `statusBar.ts` | Same meaning |
 | `list(brick, path)` → `FsEntry[]` | `files/list { brick, path }` → `FsEntry[]` | `deploy.ts`, `runFolders.ts`, `runResults.ts` | Same entry shape (`md5` lowercase hex) |
 | `exists(brick, path)` | `files/exists` | `deploy.ts`, `runFolders.ts` | |
-| `readFile(brick, path)` → bytes | `files/read { path, toLocalPath }` into a private temporary file | `runResults.ts` | Inline reads stop at 64 KiB, and the daemon refuses one only after the whole file crossed the link; a run's output may be larger (`outputCapKiB`), so EVƎ C always reads to a local file |
+| `readFile(brick, path)` → bytes | `files/read { path, toLocalPath }` into a private temporary file | `runResults.ts` | Inline reads stop at 64 KiB (since cockpit a7ac92c the daemon refuses a larger file after the brick's first reply); a run's output may be larger (`outputCapKiB`), so EVƎ C always reads to a local file |
 | `writeFile(brick, path, bytes)` | `files/write { path, fromLocalPath }` (absolute path) or `{ content }` (base64, at most 4 KiB) | `deploy.ts` (Upload) | Folders are created by the write |
 | `makeDirectory(brick, path)` | `files/makeDirectory` | `deploy.ts` | No longer needed before a write |
 | `remove(brick, path, { recursive })` | `files/remove` → `RemoveReport { leftBehind }`; several paths under one lease: `files/removePaths` | `runFolders.ts` `deleteRuns`, `runControl.ts` (`.req` cleanup) | `leftBehind` says what a recursive remove left; EVƎ C used to list again to find out |
