@@ -1,174 +1,234 @@
-import { ApiBrick, CockpitConsumer, FsEntry, ProgramState, Subscription } from '../host/cockpitTypes';
+import * as fs from 'node:fs';
+import type { CockpitClient } from '../cockpit/nativeCockpit';
 
-// A stand-in for EVƎ Cockpit's consumer handle. It records every call with its arguments,
-// fails a method with a coded error when told to, and behaves like cockpit where the host
-// depends on it: program-state subscriptions deliver changes only, and a brick's session
-// ending ends them without telling anyone.
+// A stand-in for EVƎ Cockpit's native client, as far as EVƎ C uses it: the cached brick
+// list, `request` for the contract methods EVƎ C sends, program-state subscriptions, and
+// the notifications EVƎ C listens to. Like the library, a program subscription ends
+// silently when the brick is signed out: it stays open but hears nothing more.
+
+export const BRICK_ID = 'usb-001653000aaa';
 
 export class FakeCockpitError extends Error {
-    constructor(readonly code: string, message = `cockpit refused: ${code}`) {
+    constructor(readonly code: string, message = code, readonly data: Record<string, unknown> = {}) {
         super(message);
     }
 }
 
-export const BRICK_ID = 'usb-0016533f1234';
+interface FakeBrick {
+    brickId: string;
+    name: string;
+    nameConfirmed: boolean;
+    connected: boolean;
+    paired: boolean;
+    channels: { transport: 'usb' | 'bt' | 'tcp'; state: 'available' | 'connected' | 'lost' }[];
+    holders: { kind: 'client' | 'hold' | 'remembered'; client?: string }[];
+    reconnecting?: boolean;
+}
 
-export class FakeConsumer implements CockpitConsumer {
-    readonly name = 'ev3-c';
-    /** Every call in order, as [method, ...args]. */
-    readonly calls: unknown[][] = [];
-    /** Errors the next call of a method throws (or rejects with). */
-    readonly failures = new Map<string, unknown>();
-    bricks: ApiBrick[] = [brick(BRICK_ID, { signedIn: true, active: true })];
+export function fakeBrick(brickId: string, name: string, connected = true): FakeBrick {
+    return {
+        brickId, name, nameConfirmed: true, connected, paired: false, holders: [],
+        channels: [{ transport: 'usb', state: connected ? 'connected' : 'available' }],
+    };
+}
+
+type State = { brickId: string; running: boolean; runSeq: number; stoppedBy?: string };
+type Listener<T> = (value: T) => void;
+
+interface ProgramSubscription {
+    brick: string;
+    listener: Listener<State>;
+    alive: boolean;
+    open: boolean;
+}
+
+export class FakeCockpitClient {
+    brickList: FakeBrick[] = [fakeBrick(BRICK_ID, 'AAA')];
+    /** Every request as [method, params]. */
+    readonly calls: [string, Record<string, unknown>][] = [];
+    /** Errors the next request of a method fails with. */
+    readonly failures = new Map<string, Error>();
+    /** File contents `files/read` answers with, by path. */
+    readonly files = new Map<string, Uint8Array>();
     running = false;
+    runSeq = 0;
     disposed = false;
-    private readonly programListeners = new Set<{ brick: string; listener: (state: ProgramState) => void }>();
-    private readonly bricksListeners = new Set<(bricks: ApiBrick[]) => void>();
-    private readonly activeListeners = new Set<(brickId: string | undefined) => void>();
+    questionHandler: unknown;
+    readonly daemon = { version: '0.0.0-test' };
+    private readonly subscriptions: ProgramSubscription[] = [];
+    private readonly bricksListeners = new Set<Listener<readonly FakeBrick[]>>();
+    private readonly reconnectedListeners = new Set<Listener<unknown>>();
+    private readonly lostListeners = new Set<Listener<Error>>();
+    private readonly handlers = new Map<string, Set<Listener<unknown>>>();
 
-    /** Number of program-state subscriptions that are live. */
-    get programSubscriptions(): number {
-        return this.programListeners.size;
+    /** This fake typed as the client EVƎ C takes. */
+    asClient(): CockpitClient {
+        return this as unknown as CockpitClient;
     }
 
-    listBricks(): ApiBrick[] {
-        this.calls.push(['listBricks']);
-        return this.bricks;
+    /** Subscriptions that are open and still hear changes. */
+    get liveSubscriptions(): number {
+        return this.subscriptions.filter(s => s.open && s.alive).length;
     }
 
-    getActiveBrickId(): string | undefined {
-        this.calls.push(['getActiveBrickId']);
-        return this.bricks.find(b => b.active)?.brickId;
+    /** Subscriptions EVƎ C has not disposed. */
+    get openSubscriptions(): number {
+        return this.subscriptions.filter(s => s.open).length;
     }
 
-    onBricksChanged(listener: (bricks: ApiBrick[]) => void): Subscription {
-        this.calls.push(['onBricksChanged']);
+    // ----- scripting -----
+
+    setRunning(running: boolean, runSeq = this.runSeq): void {
+        this.running = running;
+        this.runSeq = runSeq;
+        for (const s of this.subscriptions.filter(x => x.open && x.alive)) {
+            s.listener(this.state(s.brick));
+        }
+    }
+
+    /** The brick is signed out: its subscriptions hear nothing more. */
+    signOut(brickId = BRICK_ID): void {
+        for (const s of this.subscriptions.filter(x => x.brick === brickId)) {
+            s.alive = false;
+        }
+        this.setConnected(brickId, false);
+    }
+
+    signIn(brickId = BRICK_ID): void {
+        this.setConnected(brickId, true);
+    }
+
+    notifyBricks(): void {
+        for (const listener of [...this.bricksListeners]) {
+            listener(this.brickList);
+        }
+    }
+
+    notify(name: string, params: unknown): void {
+        for (const handler of [...(this.handlers.get(name) ?? [])]) {
+            handler(params);
+        }
+    }
+
+    daemonReplaced(): void {
+        for (const listener of [...this.reconnectedListeners]) {
+            listener(this.daemon);
+        }
+    }
+
+    lose(error: Error): void {
+        for (const listener of [...this.lostListeners]) {
+            listener(error);
+        }
+    }
+
+    // ----- the client -----
+
+    bricks(): readonly FakeBrick[] {
+        return this.brickList;
+    }
+
+    brick(ref: string): FakeBrick | undefined {
+        const wanted = ref.trim().toLowerCase();
+        return this.brickList.find(b => b.brickId === ref) ?? this.brickList.find(b => b.name.toLowerCase() === wanted);
+    }
+
+    onBricksChanged(listener: Listener<readonly FakeBrick[]>): { dispose(): void } {
         this.bricksListeners.add(listener);
         return { dispose: () => this.bricksListeners.delete(listener) };
     }
 
-    onActiveBrickChanged(listener: (brickId: string | undefined) => void): Subscription {
-        this.calls.push(['onActiveBrickChanged']);
-        this.activeListeners.add(listener);
-        return { dispose: () => this.activeListeners.delete(listener) };
+    onReconnected(listener: Listener<unknown>): { dispose(): void } {
+        this.reconnectedListeners.add(listener);
+        return { dispose: () => this.reconnectedListeners.delete(listener) };
     }
 
-    list(brick: string, path: string): Promise<FsEntry[]> {
-        return this.call('list', [brick, path], [{ name: 'prog', kind: 'file', bytes: 10, md5: 'abc' }]);
+    onLost(listener: Listener<Error>): { dispose(): void } {
+        this.lostListeners.add(listener);
+        return { dispose: () => this.lostListeners.delete(listener) };
     }
 
-    exists(brick: string, path: string): Promise<boolean> {
-        return this.call('exists', [brick, path], true);
+    onNotice(): { dispose(): void } {
+        return { dispose: () => undefined };
     }
 
-    readFile(brick: string, path: string): Promise<Uint8Array> {
-        return this.call('readFile', [brick, path], new Uint8Array([1, 2, 3]));
+    onQuestion(handler: unknown): void {
+        this.questionHandler = handler;
     }
 
-    writeFile(brick: string, path: string, content: Uint8Array): Promise<void> {
-        return this.call('writeFile', [brick, path, content], undefined);
+    on(name: string, handler: Listener<unknown>): { dispose(): void } {
+        let set = this.handlers.get(name);
+        if (!set) {
+            set = new Set();
+            this.handlers.set(name, set);
+        }
+        const handlers = set;
+        handlers.add(handler);
+        return { dispose: () => handlers.delete(handler) };
     }
 
-    makeDirectory(brick: string, path: string): Promise<void> {
-        return this.call('makeDirectory', [brick, path], undefined);
-    }
-
-    remove(brick: string, path: string, options?: { recursive?: boolean }): Promise<void> {
-        return this.call('remove', [brick, path, options], undefined);
-    }
-
-    runProgram(brick: string, path: string): Promise<ProgramState> {
-        return this.call('runProgram', [brick, path], { brickId: BRICK_ID, running: true });
-    }
-
-    stopProgram(brick: string): Promise<ProgramState> {
-        return this.call('stopProgram', [brick], { brickId: BRICK_ID, running: false });
-    }
-
-    emergencyStop(brick: string): Promise<ProgramState> {
-        return this.call('emergencyStop', [brick], { brickId: BRICK_ID, running: false });
-    }
-
-    isProgramRunning(brick: string): Promise<ProgramState> {
-        return this.call('isProgramRunning', [brick], { brickId: BRICK_ID, running: this.running });
-    }
-
-    onProgramStateChanged(brick: string, listener: (state: ProgramState) => void): Subscription {
-        this.calls.push(['onProgramStateChanged', brick]);
-        const failure = this.takeFailure('onProgramStateChanged');
+    async request(method: string, params: Record<string, unknown>): Promise<unknown> {
+        await Promise.resolve();
+        this.calls.push([method, params]);
+        const failure = this.failures.get(method);
         if (failure !== undefined) {
+            this.failures.delete(method);
             throw failure;
         }
-        const entry = { brick, listener };
-        this.programListeners.add(entry);
-        return { dispose: () => this.programListeners.delete(entry) };
+        const brickId = String(params.brick ?? '');
+        switch (method) {
+        case 'files/list': return { entries: [{ name: 'prog', kind: 'file', bytes: 3, md5: 'abc' }] };
+        case 'files/exists': return { exists: true };
+        case 'files/read': {
+            const data = this.files.get(String(params.path)) ?? new Uint8Array();
+            if (typeof params.toLocalPath === 'string') {
+                fs.writeFileSync(params.toLocalPath, data);
+                return { bytes: data.length };
+            }
+            return { bytes: data.length, content: Buffer.from(data).toString('base64') };
+        }
+        case 'files/write': return { bytes: 0 };
+        case 'files/removePaths': return { leftBehind: [] };
+        case 'programs/deployAndRun': {
+            this.runSeq++;
+            this.running = true;
+            const files = params.files as { remotePath: string }[];
+            return { brickId, outcome: 'started', runSeq: this.runSeq, uploaded: files.map(f => f.remotePath), skipped: [] };
+        }
+        case 'programs/stop':
+        case 'programs/emergencyStop':
+            this.running = false;
+            return this.state(brickId);
+        case 'programs/status': return this.state(brickId);
+        default: throw new FakeCockpitError('invalid_request', `the fake does not know ${method}`);
+        }
+    }
+
+    async subscribePrograms(brick: string, listener: Listener<State>): Promise<{ readonly state: State; dispose(): void }> {
+        await Promise.resolve();
+        this.calls.push(['programs/subscribe', { brick }]);
+        const failure = this.failures.get('programs/subscribe');
+        if (failure !== undefined) {
+            this.failures.delete('programs/subscribe');
+            throw failure;
+        }
+        const subscription: ProgramSubscription = { brick, listener, alive: true, open: true };
+        this.subscriptions.push(subscription);
+        return { state: this.state(brick), dispose: () => { subscription.open = false; } };
     }
 
     dispose(): void {
         this.disposed = true;
     }
 
-    // Test controls
-
-    /** The user-slot state changes on the brick. */
-    setRunning(running: boolean): void {
-        this.running = running;
-        for (const { brick: target, listener } of [...this.programListeners]) {
-            listener({ brickId: target, running });
-        }
+    private state(brickId: string): State {
+        return { brickId, running: this.running, runSeq: this.runSeq };
     }
 
-    /**
-     * The brick's session ends: its program subscriptions end silently, then the list
-     * changes. With `stillSignedIn` the brick stays signed in while its link is lost.
-     */
-    disconnect(brickId = BRICK_ID, stillSignedIn = false): void {
-        for (const entry of [...this.programListeners]) {
-            if (entry.brick === brickId) {
-                this.programListeners.delete(entry);
-            }
-        }
-        this.bricks = this.bricks.map(b => (b.brickId === brickId
-            ? { ...b, signedIn: stillSignedIn, channels: [{ transport: 'usb', state: 'lost' }] }
+    private setConnected(brickId: string, connected: boolean): void {
+        this.brickList = this.brickList.map(b => (b.brickId === brickId
+            ? { ...b, connected, channels: b.channels.map(c => ({ ...c, state: connected ? 'connected' : 'available' })) }
             : b));
         this.notifyBricks();
     }
-
-    /** The brick is signed in and connected again. */
-    reconnect(brickId = BRICK_ID): void {
-        this.bricks = this.bricks.map(b => (b.brickId === brickId
-            ? { ...b, signedIn: true, channels: [{ transport: 'usb', state: 'connected' }] }
-            : b));
-        this.notifyBricks();
-    }
-
-    notifyBricks(): void {
-        for (const listener of [...this.bricksListeners]) {
-            listener(this.bricks);
-        }
-    }
-
-    private takeFailure(method: string): unknown {
-        const failure = this.failures.get(method);
-        this.failures.delete(method);
-        return failure;
-    }
-
-    private call<T>(method: string, args: unknown[], result: T): Promise<T> {
-        this.calls.push([method, ...args]);
-        const failure = this.takeFailure(method);
-        return failure === undefined ? Promise.resolve(result) : Promise.reject(failure);
-    }
-}
-
-export function brick(brickId: string, options: { signedIn: boolean; active: boolean }): ApiBrick {
-    return {
-        brickId,
-        name: 'EV3',
-        nameConfirmed: true,
-        signedIn: options.signedIn,
-        active: options.active,
-        paired: false,
-        channels: [{ transport: 'usb', state: options.signedIn ? 'connected' : 'available' }],
-    };
 }

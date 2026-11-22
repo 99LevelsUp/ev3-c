@@ -1,10 +1,15 @@
 import * as crypto from 'node:crypto';
-import { BrickEntry, BrickEvent, BrickPort, Clock, ProgramState, Subscription } from '../core/brickPort';
+import * as fs from 'node:fs';
+import {
+    BrickEntry, BrickEvent, BrickPort, Clock, DeployItem, FileSource, ProgramState, StartOutcome, StartReport, Subscription,
+} from '../core/brickPort';
 
 // An in-memory brick behind the BrickPort interface, with a virtual clock, for the
-// brick-operation tests. It behaves like the real brick where the core depends on it:
-// a recursive remove deletes only one folder level and reports no failure, listings
-// carry each file's MD5, and every call fails with "not_connected" while disconnected.
+// brick-operation tests. It behaves like the cockpit daemon where the core depends on it:
+// writes create missing folders, listings carry each file's MD5, a start refuses while a
+// program runs and numbers every start, and every call fails with "not_connected" while
+// disconnected. Its recursive removal deletes one folder level only and reports what it
+// left, so the core cannot rely on a removal being complete.
 
 export class FakeCockpitError extends Error {
     constructor(readonly code: string, message = code) {
@@ -57,17 +62,19 @@ export class FakeBrickPort implements BrickPort {
     /** Error codes the next writes of a path fail with, one per write. */
     readonly writeFailures = new Map<string, string[]>();
     running = false;
-    /** The state runProgram reports; defaults to running. */
-    runProgramResult: ProgramState = { running: true };
-    /** Error code runProgram fails with, if set. */
-    runProgramError: string | undefined;
+    /** The number of the last start; every start counts, a refused one too. */
+    runSeq = 0;
+    /** How the next starts end; `started` by default. */
+    startOutcome: StartOutcome = 'started';
+    /** Error code a start fails with after its files are uploaded, if set. */
+    startError: string | undefined;
     disconnected = false;
-    /** Called inside runProgram, before it returns. */
+    /** Called inside deployAndRun once the program "runs", before the call returns. */
     onRun: ((path: string) => void) | undefined;
     /** An event sent to each new subscriber at once, like a replay of an earlier state. */
     replayOnSubscribe: BrickEvent | undefined;
-    /** Called inside remove, after the removal. */
-    onRemove: ((path: string) => void) | undefined;
+    /** Called inside removePaths, after the removal. */
+    onRemove: ((paths: readonly string[]) => void) | undefined;
     private readonly listeners = new Set<(event: BrickEvent) => void>();
 
     constructor(readonly clock: FakeClock) {}
@@ -96,6 +103,21 @@ export class FakeBrickPort implements BrickPort {
 
     has(path: string): boolean {
         return this.files.has(path) || this.dirs.has(path);
+    }
+
+    state(): ProgramState {
+        return { running: this.running, runSeq: this.runSeq };
+    }
+
+    /** Tells the subscribers the program state now. */
+    emitState(): void {
+        this.emit({ kind: 'program', state: this.state() });
+    }
+
+    /** The program stops and the subscribers hear it. */
+    stop(): void {
+        this.running = false;
+        this.emitState();
     }
 
     emit(event: BrickEvent): void {
@@ -130,13 +152,6 @@ export class FakeBrickPort implements BrickPort {
         return this.call('exists', path, () => this.has(path));
     }
 
-    makeDirectory(path: string): Promise<void> {
-        return this.call('makeDirectory', path, () => {
-            this.requireFolder(parentOf(path));
-            this.dirs.add(path);
-        });
-    }
-
     readFile(path: string): Promise<Uint8Array> {
         return this.call('readFile', path, () => {
             this.readTimes.push(this.clock.now());
@@ -148,82 +163,95 @@ export class FakeBrickPort implements BrickPort {
         });
     }
 
-    writeFile(path: string, data: Uint8Array): Promise<void> {
-        return this.call('writeFile', path, () => {
-            const failure = this.writeFailures.get(path)?.shift();
-            if (failure !== undefined) {
-                throw new FakeCockpitError(failure);
-            }
-            this.requireFolder(parentOf(path));
-            this.files.set(path, data);
-        });
+    writeFile(path: string, source: FileSource): Promise<void> {
+        return this.call('writeFile', path, () => this.write(path, source));
     }
 
-    remove(path: string, options?: { recursive?: boolean }): Promise<void> {
-        return this.call('remove' + (options?.recursive === true ? ' -r' : ''), path, () => {
-            if (this.files.delete(path)) {
-                return;
-            }
-            if (!this.dirs.has(path)) {
-                throw new FakeCockpitError('protocol_failed', `no ${path}`);
-            }
-            for (const file of [...this.files.keys()]) {
-                if (parentOf(file) === path && options?.recursive === true) {
-                    this.files.delete(file);
+    removePaths(paths: readonly string[], options?: { recursive?: boolean }): Promise<{ leftBehind: readonly string[] }> {
+        return this.call('removePaths' + (options?.recursive === true ? ' -r' : ''), paths.join(' '), () => {
+            const leftBehind: string[] = [];
+            for (const path of paths) {
+                if (this.files.delete(path) || !this.dirs.has(path)) {
+                    continue;
+                }
+                for (const file of [...this.files.keys()]) {
+                    if (parentOf(file) === path && options?.recursive === true) {
+                        this.files.delete(file);
+                    }
+                }
+                const hasChildren = [...this.files.keys(), ...this.dirs].some(child => child !== path && parentOf(child) === path);
+                if (hasChildren) {
+                    leftBehind.push(path);
+                } else {
+                    this.dirs.delete(path);
                 }
             }
-            const hasChildren = [...this.files.keys(), ...this.dirs].some(child => child !== path && parentOf(child) === path);
-            if (!hasChildren) {
-                this.dirs.delete(path);
-            } else if (options?.recursive !== true) {
-                throw new FakeCockpitError('protocol_failed', `${path} is not empty`);
-            }
-            // Recursive and a subfolder is left: the real brick keeps the folder and reports nothing.
-            this.onRemove?.(path);
+            this.onRemove?.(paths);
+            return { leftBehind };
         });
     }
 
-    runProgram(path: string): Promise<ProgramState> {
-        return this.call('runProgram', path, () => {
-            if (this.runProgramError !== undefined) {
-                throw new FakeCockpitError(this.runProgramError);
+    deployAndRun(files: readonly DeployItem[], runPath: string): Promise<StartReport> {
+        return this.call('deployAndRun', runPath, () => {
+            if (this.running) {
+                throw new FakeCockpitError('program_running');
             }
-            this.running = this.runProgramResult.running;
-            this.onRun?.(path);
-            return this.runProgramResult;
+            const uploaded: string[] = [];
+            const skipped: string[] = [];
+            for (const item of files) {
+                const data = content(item.source);
+                const there = this.files.get(item.brickPath);
+                if (item.skipIfSame === true && there !== undefined && md5(there) === md5(data)) {
+                    skipped.push(item.brickPath);
+                    continue;
+                }
+                this.write(item.brickPath, item.source);
+                uploaded.push(item.brickPath);
+            }
+            this.runSeq++;
+            if (this.startError !== undefined) {
+                throw new FakeCockpitError(this.startError);
+            }
+            this.running = this.startOutcome !== 'not_seen_running';
+            this.onRun?.(runPath);
+            return { outcome: this.startOutcome, runSeq: this.runSeq, uploaded, skipped };
         });
     }
 
     stopProgram(): Promise<ProgramState> {
         return this.call('stopProgram', '', () => {
             this.running = false;
-            return { running: false };
+            return this.state();
         });
     }
 
     emergencyStop(): Promise<ProgramState> {
         return this.call('emergencyStop', '', () => {
             this.running = false;
-            return { running: false };
+            return this.state();
         });
     }
 
-    isProgramRunning(): Promise<ProgramState> {
-        return this.call('isProgramRunning', '', () => ({ running: this.running }));
+    programState(): Promise<ProgramState> {
+        return this.call('programState', '', () => this.state());
     }
 
-    onBrickEvent(listener: (event: BrickEvent) => void): Subscription {
-        this.listeners.add(listener);
-        if (this.replayOnSubscribe !== undefined) {
-            listener(this.replayOnSubscribe);
-        }
-        return { dispose: () => this.listeners.delete(listener) };
+    onBrickEvent(listener: (event: BrickEvent) => void): Promise<Subscription> {
+        return this.call('onBrickEvent', '', () => {
+            this.listeners.add(listener);
+            if (this.replayOnSubscribe !== undefined) {
+                listener(this.replayOnSubscribe);
+            }
+            return { dispose: () => { this.listeners.delete(listener); } };
+        });
     }
 
-    private requireFolder(path: string): void {
-        if (!this.dirs.has(path)) {
-            throw new FakeCockpitError('protocol_failed', `no folder ${path}`);
+    private write(path: string, source: FileSource): void {
+        const failure = this.writeFailures.get(path)?.shift();
+        if (failure !== undefined) {
+            throw new FakeCockpitError(failure);
         }
+        this.putFile(path, content(source));
     }
 
     private call<T>(method: string, path: string, body: () => T): Promise<T> {
@@ -237,6 +265,10 @@ export class FakeBrickPort implements BrickPort {
             return Promise.reject(error);
         }
     }
+}
+
+function content(source: FileSource): Uint8Array {
+    return 'localPath' in source ? fs.readFileSync(source.localPath) : source.data;
 }
 
 export function md5(data: Uint8Array): string {

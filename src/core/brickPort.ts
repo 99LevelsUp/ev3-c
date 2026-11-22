@@ -1,6 +1,6 @@
-// The only way the core reaches a brick. The VS Code layer adapts EVƎ Cockpit's
-// consumer handle to this interface for the brick the author picked, so nothing in the
-// core depends on VS Code or on cockpit's own types.
+// The only way the core reaches a brick. The host adapts EVƎ Cockpit's client to this
+// interface for the brick the author picked, so nothing in the core depends on VS Code or
+// on cockpit's own types.
 
 /** One entry of a brick folder listing. */
 export interface BrickEntry {
@@ -11,23 +11,53 @@ export interface BrickEntry {
     readonly md5?: string;
 }
 
-/** The user-slot state cockpit reports. */
+/**
+ * The user-slot state cockpit reports. `runSeq` numbers the starts cockpit sent to the
+ * brick (0 before any): a state with a `runSeq` at least a start's own is about that run
+ * or a later one, never an earlier.
+ */
 export interface ProgramState {
     readonly running: boolean;
+    readonly runSeq: number;
 }
 
 /**
  * What the state subscription delivers: a change of the user-slot state, or the brick
- * coming back after its connection was lost. Cockpit has no reconnect event of its own;
- * the adapter sends `reconnected` once it has subscribed again after a lost connection.
- * The subscription delivers changes only, not a replay of the current state.
+ * coming back after its connection was lost, when the state may have changed unseen.
  */
 export type BrickEvent =
-    | { readonly kind: 'program'; readonly running: boolean }
+    | { readonly kind: 'program'; readonly state: ProgramState }
     | { readonly kind: 'reconnected' };
 
 export interface Subscription {
     dispose(): void;
+}
+
+/** File content to put on the brick: a file on this computer, or a few bytes. */
+export type FileSource =
+    | { readonly localPath: string }
+    | { readonly data: Uint8Array };
+
+/** One file of a deployment. */
+export interface DeployItem {
+    readonly brickPath: string;
+    readonly source: FileSource;
+    /** Leave the brick's copy when its MD5 matches. */
+    readonly skipIfSame?: boolean;
+}
+
+/**
+ * How a start ended: `started` (seen running), `not_seen_running` (it may have ended at
+ * once), or `uncertain` (the reply was lost; read the state, never start again).
+ */
+export type StartOutcome = 'started' | 'not_seen_running' | 'uncertain';
+
+export interface StartReport {
+    readonly outcome: StartOutcome;
+    /** This start's number; see `ProgramState.runSeq`. */
+    readonly runSeq: number;
+    readonly uploaded: readonly string[];
+    readonly skipped: readonly string[];
 }
 
 /**
@@ -37,15 +67,21 @@ export interface Subscription {
 export interface BrickPort {
     list(path: string): Promise<BrickEntry[]>;
     exists(path: string): Promise<boolean>;
-    makeDirectory(path: string): Promise<void>;
     readFile(path: string): Promise<Uint8Array>;
-    writeFile(path: string, data: Uint8Array): Promise<void>;
-    remove(path: string, options?: { recursive?: boolean }): Promise<void>;
-    runProgram(path: string): Promise<ProgramState>;
+    /** Writes one file; missing folders are created. */
+    writeFile(path: string, source: FileSource): Promise<void>;
+    /** Removes several paths at once; returns what a recursive removal left behind. */
+    removePaths(paths: readonly string[], options?: { recursive?: boolean }): Promise<{ leftBehind: readonly string[] }>;
+    /**
+     * Checks that no program runs, uploads the files, and starts `runPath`, as one operation
+     * no other client can interleave with. Refused with `program_running` while one runs.
+     */
+    deployAndRun(files: readonly DeployItem[], runPath: string): Promise<StartReport>;
     stopProgram(): Promise<ProgramState>;
     emergencyStop(): Promise<ProgramState>;
-    isProgramRunning(): Promise<ProgramState>;
-    onBrickEvent(listener: (event: BrickEvent) => void): Subscription;
+    programState(): Promise<ProgramState>;
+    /** Follows the brick's program state; resolves once the subscription is live. */
+    onBrickEvent(listener: (event: BrickEvent) => void): Promise<Subscription>;
 }
 
 /** Cockpit's error code of a failed brick call, if the error carries one. */
@@ -69,34 +105,7 @@ export const systemClock: Clock = {
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 };
 
-/** Shortest gap between two file reads; cockpit's readFile serves small files about once per second. */
-export const READ_INTERVAL_MS = 1000;
-
-/** Reads brick files; `PacedReader` is the implementation the host shares across operations. */
+/** Reads brick files; a port is one. Kept apart so result readers need nothing else of the port. */
 export interface BrickFileReader {
     readFile(path: string): Promise<Uint8Array>;
-}
-
-/**
- * Keeps file reads at most one per second, also across operations that share it.
- * The host keeps one per port.
- */
-export class PacedReader implements BrickFileReader {
-    private lastStart = Number.NEGATIVE_INFINITY;
-    private queue: Promise<unknown> = Promise.resolve();
-
-    constructor(private readonly port: BrickPort, private readonly clock: Clock = systemClock) {}
-
-    readFile(path: string): Promise<Uint8Array> {
-        const read = this.queue.then(async () => {
-            const wait = this.lastStart + READ_INTERVAL_MS - this.clock.now();
-            if (wait > 0) {
-                await this.clock.sleep(wait);
-            }
-            this.lastStart = this.clock.now();
-            return this.port.readFile(path);
-        });
-        this.queue = read.catch(() => undefined);
-        return read;
-    }
 }

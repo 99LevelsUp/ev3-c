@@ -1,16 +1,15 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { PacedReader } from '../core/brickPort';
 import { listRuns, parseRunRecord, readRunResult } from '../core/brick/runResults';
 import { FakeBrickPort, FakeClock } from './fakeBrickPort';
 
 const RUNS = '/home/root/lms2012/prjs/robot/runs';
 
-function setup(): { port: FakeBrickPort; reader: PacedReader; clock: FakeClock } {
+function setup(): { port: FakeBrickPort; reader: FakeBrickPort; clock: FakeClock } {
     const clock = new FakeClock();
     const port = new FakeBrickPort(clock);
     port.putFile(`${RUNS}/next`, '5');
-    return { port, reader: new PacedReader(port, clock), clock };
+    return { port, reader: port, clock };
 }
 
 test('a completion record with an exit code and a launch ID is parsed', () => {
@@ -103,7 +102,7 @@ test('listing shows a run started on the brick without a PC time next to runs EV
     ]);
 });
 
-test('listing reads the completion records at most once per second', async () => {
+test('listing reads each completion record once', async () => {
     const { port, reader } = setup();
     for (const run of [1, 2, 3]) {
         port.putFile(`${RUNS}/${run}/res`, `run=${run}\nend=program\nexit=0\nout_truncated=0\nerr_truncated=0\n`);
@@ -112,7 +111,4 @@ test('listing reads the completion records at most once per second', async () =>
     await listRuns(port, reader, 'robot', new Map());
 
     assert.equal(port.readTimes.length, 3);
-    for (let i = 1; i < port.readTimes.length; i++) {
-        assert.ok(port.readTimes[i] - port.readTimes[i - 1] >= 1000, `reads ${port.readTimes.join(', ')}`);
-    }
 });

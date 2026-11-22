@@ -3,10 +3,11 @@ import * as fs from 'node:fs/promises';
 import { BuildArtifact } from '../build/buildProject';
 import { brickErrorCode, BrickPort } from '../brickPort';
 
-// Puts a built project onto the brick. Only files whose MD5 differs from cockpit's
-// listing are uploaded, which skips the unchanged supervisor and doubles as its version
-// check. Nothing is uploaded while a program runs: overwriting a running binary fails on
-// the brick or leaves it truncated.
+// Upload without a run: puts a built project onto the brick. Only files whose MD5 differs
+// from the brick's listing are uploaded, which skips the unchanged supervisor and doubles
+// as its version check. Nothing is uploaded while a program runs: overwriting a running
+// binary fails on the brick or leaves it truncated. A Run uploads inside its own start
+// (`runProject`), where cockpit makes the same checks under one lease.
 
 /** A brick operation that failed; `code` is cockpit's error code when there is one. */
 export class BrickOperationError extends Error {
@@ -23,7 +24,7 @@ export interface DeployReport {
 
 /** Uploads the artifacts of one build, which all go into the same project folder. */
 export async function deploy(port: BrickPort, artifacts: readonly BuildArtifact[]): Promise<DeployReport> {
-    if ((await port.isProgramRunning()).running) {
+    if ((await port.programState()).running) {
         throw new BrickOperationError('A program is running on the brick. Stop it first, then upload the project again.', 'program_running');
     }
     const report: DeployReport = { uploaded: [], unchanged: [] };
@@ -39,8 +40,6 @@ export async function deploy(port: BrickPort, artifacts: readonly BuildArtifact[
                 onBrick.set(entry.name, entry.md5?.toLowerCase());
             }
         }
-    } else {
-        await port.makeDirectory(dir);
     }
 
     for (const artifact of artifacts) {
@@ -50,32 +49,42 @@ export async function deploy(port: BrickPort, artifacts: readonly BuildArtifact[
             report.unchanged.push(artifact);
             continue;
         }
-        await upload(port, artifact.brickPath, data);
+        await upload(port, artifact);
         report.uploaded.push(artifact);
     }
     return report;
 }
 
 /**
- * EVƎ Cockpit can drop its route to a brick for 5–10 ms after a failed send and reroute
- * at once; a command issued in that gap fails as not connected. Retrying right away often
- * lands in the same gap, so the retry waits a little first.
+ * Failures where the link dropped before or during the write. Writing the whole file
+ * again is safe, and a moment later the link is often back. Anything else, above all
+ * `outcome_unknown`, `brick_busy` and `cancelled`, is not retried.
  */
+const RETRIED_CODES = new Set(['not_connected', 'link_lost', 'transport_failed']);
 const RETRY_DELAY_MS = 250;
 
-async function upload(port: BrickPort, brickPath: string, data: Uint8Array): Promise<void> {
+async function upload(port: BrickPort, artifact: BuildArtifact): Promise<void> {
+    const write = () => port.writeFile(artifact.brickPath, { localPath: artifact.localPath });
     try {
-        await port.writeFile(brickPath, data);
-    } catch {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        try {
-            await port.writeFile(brickPath, data);
-        } catch (error) {
-            const code = brickErrorCode(error);
-            const reason = error instanceof Error ? error.message : String(error);
-            throw new BrickOperationError(`Uploading ${brickPath} failed twice (${code ?? 'no error code'}): ${reason}`, code);
+        await write();
+        return;
+    } catch (error) {
+        if (!RETRIED_CODES.has(brickErrorCode(error) ?? '')) {
+            throw failed(artifact.brickPath, error, 'failed');
         }
     }
+    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+    try {
+        await write();
+    } catch (error) {
+        throw failed(artifact.brickPath, error, 'failed twice');
+    }
+}
+
+function failed(brickPath: string, error: unknown, how: string): BrickOperationError {
+    const code = brickErrorCode(error);
+    const reason = error instanceof Error ? error.message : String(error);
+    return new BrickOperationError(`Uploading ${brickPath} ${how} (${code ?? 'no error code'}): ${reason}`, code);
 }
 
 function folderOf(brickPath: string): string {

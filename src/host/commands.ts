@@ -43,8 +43,8 @@ export interface HostEnvironment {
 
 /** How the brick commands reach the brick the "ev3-c.brick" setting names. */
 export interface BrickAccess {
-    /** The port and shared reader of the brick the setting names now; throws when there is none. */
-    current(): { port: BrickPort; reader: BrickFileReader };
+    /** The port and reader of the brick the setting names now; connects to the cockpit first when needed. */
+    current(): Promise<{ port: BrickPort; reader: BrickFileReader }>;
     /** Launch IDs of the runs EVƎ C started in this session, with their PC start times. */
     readonly launches: Map<string, Date>;
 }
@@ -85,7 +85,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
                 return;
             }
             const built = await build(env, dir);
-            await upload(env, bricks.current().port, built);
+            await upload(env, (await bricks.current()).port, built);
         }),
         register(env, COMMAND_IDS.run, async () => {
             const dir = await trustedProjectFolder();
@@ -93,11 +93,12 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
                 return;
             }
             const built = await build(env, dir);
-            const { port, reader } = bricks.current();
-            await upload(env, port, built);
+            const { port, reader } = await bricks.current();
             const project = built.project.name;
-            env.output.info(`Running "${project}". Stop it with "EV3 C: Stop" or the brick's Back button.`);
-            const outcome = await env.core.runProject({ port, reader, project, launches: bricks.launches });
+            env.output.info(`Uploading and running "${project}". Stop it with "EV3 C: Stop" or the brick's Back button.`);
+            const outcome = await env.core.runProject({ port, reader, project, artifacts: built.artifacts, launches: bricks.launches });
+            env.output.info(`Started "${project}" (${outcome.start.outcome}, start ${outcome.start.runSeq}): `
+                + `uploaded [${outcome.start.uploaded.join(', ')}], unchanged [${outcome.start.skipped.join(', ')}]`);
             env.output.show(true);
             if (outcome.kind === 'result') {
                 writeLines(env, formatRunResult(project, outcome.result));
@@ -108,11 +109,11 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             }
         }),
         register(env, COMMAND_IDS.stop, async () => {
-            const state = await env.core.stopProgram(bricks.current().port);
+            const state = await env.core.stopProgram((await bricks.current()).port);
             reportStopped(env, 'Stop', state.running);
         }),
         register(env, COMMAND_IDS.emergencyStop, async () => {
-            const state = await env.core.emergencyStop(bricks.current().port);
+            const state = await env.core.emergencyStop((await bricks.current()).port);
             reportStopped(env, 'Emergency stop', state.running);
         }),
         register(env, COMMAND_IDS.showRuns, async () => {
@@ -121,7 +122,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
                 return;
             }
             const project = (await env.core.loadProjectConfig(dir)).name;
-            const { port, reader } = bricks.current();
+            const { port, reader } = await bricks.current();
             const runs = await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Notification, title: `EVƎ C: reading the runs of "${project}"` },
                 () => env.core.listRuns(port, reader, project, bricks.launches),
@@ -155,7 +156,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             if (keepLast === undefined) {
                 return;
             }
-            const report = await env.core.deleteRuns(bricks.current().port, project, { keepLast });
+            const report = await env.core.deleteRuns((await bricks.current()).port, project, { keepLast });
             const parts = [`deleted ${report.deleted.length}`, `kept ${report.kept.length}`];
             const level = report.stillPresent.length > 0 ? 'warn' : 'info';
             env.output[level](`Run folders of "${project}": deleted [${report.deleted.join(', ')}], kept [${report.kept.join(', ')}]`

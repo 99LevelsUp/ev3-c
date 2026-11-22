@@ -47,10 +47,10 @@ export interface DeleteRunsReport {
 }
 
 /**
- * Deletes the project's run folders, all of them or all but the newest `keepLast`, one
- * folder at a time, and never the folder of the run in progress. Cockpit's recursive
- * remove deletes one folder level and reports nothing when it leaves a folder behind,
- * so the runs folder is listed again to report what is still there.
+ * Deletes the project's run folders, all of them or all but the newest `keepLast`, in one
+ * cockpit operation, and never the folder of the run in progress. The runs folder is
+ * listed again afterwards, so what is reported as still there is what the brick shows,
+ * whatever the removal said or however it failed.
  */
 export async function deleteRuns(port: BrickPort, project: string, options: DeleteRunsOptions = {}): Promise<DeleteRunsReport> {
     // Targets come from this one listing, so a run folder the supervisor creates
@@ -67,11 +67,11 @@ export async function deleteRuns(port: BrickPort, project: string, options: Dele
     }
 
     const targets = runs.filter(run => !kept.has(run));
-    for (const run of targets) {
+    if (targets.length > 0) {
         try {
-            await port.remove(runDir(project, run), { recursive: true });
+            await port.removePaths(targets.map(run => runDir(project, run)), { recursive: true });
         } catch {
-            // The listing below reports the folder as still present.
+            // The listing below reports the folders still present.
         }
     }
 
@@ -89,7 +89,7 @@ export async function deleteRuns(port: BrickPort, project: string, options: Dele
  * ended (or the supervisor has not created the new folder yet), so nothing is protected.
  */
 async function runningRun(port: BrickPort, project: string, runs: readonly number[]): Promise<number | undefined> {
-    if (!(await port.isProgramRunning()).running) {
+    if (!(await port.programState()).running) {
         return undefined;
     }
     const newest = runs[runs.length - 1];

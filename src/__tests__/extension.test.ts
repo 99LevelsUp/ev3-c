@@ -1,13 +1,14 @@
-import { beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { activate } from '../extension';
+import { activate, CLIENT_NAME, cockpitConnector } from '../extension';
 import { BuildProjectOptions, BuildResult } from '../core';
+import { connectCockpit } from '../cockpit/nativeCockpit';
 import { COMMAND_IDS, defaultCore, registerProjectCommands } from '../host/commands';
-import { FakeConsumer } from './fakeCockpit';
+import { BRICK_ID, FakeCockpitClient, FakeCockpitError } from './fakeCockpit';
 
 // The vscode stub's test controls (see src/test/vscodeStub.cjs).
 interface StubState {
@@ -27,7 +28,6 @@ const ALL_COMMANDS = [
     'ev3-c.build', 'ev3-c.upload', 'ev3-c.run', 'ev3-c.stop', 'ev3-c.emergencyStop',
     'ev3-c.showRuns', 'ev3-c.deleteRuns', 'ev3-c.checkToolchain',
 ];
-const BRICK_FREE_COMMANDS = ['ev3-c.build', 'ev3-c.checkToolchain'];
 
 function context(): vscode.ExtensionContext {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ev3c-host-'));
@@ -35,15 +35,29 @@ function context(): vscode.ExtensionContext {
         subscriptions: [],
         extensionPath: dir,
         globalStorageUri: { fsPath: path.join(dir, 'storage') },
+        extension: { packageJSON: { version: '1.2.3' } },
     } as unknown as vscode.ExtensionContext;
 }
 
-function installCockpit(apiVersion: number): FakeConsumer {
-    const consumer = new FakeConsumer();
-    stub.__state.extensions.set('99LevelsUp.ev3-cockpit', {
-        activate: async () => ({ apiVersion, registerConsumer: () => consumer }),
-    });
-    return consumer;
+/** Cockpit's daemon answers through a fake client; the connections made are recorded. */
+function installCockpit(): { fake: FakeCockpitClient; connects: { name: string; version: string }[] } {
+    const fake = new FakeCockpitClient();
+    const connects: { name: string; version: string }[] = [];
+    cockpitConnector.connect = async options => {
+        connects.push({ name: options.name, version: options.version });
+        return fake.asClient();
+    };
+    return { fake, connects };
+}
+
+/** No daemon can be started: the cockpit is not installed. */
+function noCockpit(): { attempts: number } {
+    const counter = { attempts: 0 };
+    cockpitConnector.connect = async () => {
+        counter.attempts++;
+        throw Object.assign(new FakeCockpitError('daemon_unavailable', 'No daemon was recorded.'), { failure: 'missing_binary' });
+    };
+    return counter;
 }
 
 function projectFolder(config: object | undefined): string {
@@ -58,6 +72,7 @@ function projectFolder(config: object | undefined): string {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const errors = () => stub.__state.messages.filter(m => m.level === 'error');
+const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => method !== 'programs/subscribe' && method !== 'programs/status');
 
 beforeEach(() => {
     stub.__reset();
@@ -65,44 +80,68 @@ beforeEach(() => {
     stub.__state.config.set('ev3-c.toolchain.path', '');
 });
 
-test('without cockpit, activation shows one clear error and registers no brick commands', async () => {
-    await activate(context());
-    assert.equal(errors().length, 1);
-    assert.match(errors()[0].text, /EVƎ Cockpit/);
-    assert.deepEqual([...stub.__state.commands.keys()].sort(), BRICK_FREE_COMMANDS);
+afterEach(() => {
+    cockpitConnector.connect = connectCockpit;
 });
 
-test('with a cockpit API other than version 1, activation shows one clear error and registers no brick commands', async () => {
-    const consumer = installCockpit(2);
-    await activate(context());
-    assert.equal(errors().length, 1);
-    assert.match(errors()[0].text, /version 2/);
-    assert.deepEqual([...stub.__state.commands.keys()].sort(), BRICK_FREE_COMMANDS);
-    assert.deepEqual(consumer.calls, []);
-});
-
-test('with cockpit API version 1, every command is registered and the status bar shows the slot state', async () => {
-    const consumer = installCockpit(1);
-    await activate(context());
+test('without cockpit, activation registers every command, logs a warning and shows no error', async () => {
+    const counter = noCockpit();
+    activate(context());
     await settle();
     assert.deepEqual(errors(), []);
+    assert.deepEqual([...stub.__state.commands.keys()].sort(), [...ALL_COMMANDS].sort());
+    assert.ok(stub.__state.log.some(l => l.level === 'warn' && /could not connect to EVƎ Cockpit/.test(l.line)));
+    assert.match(stub.__state.statusBarItems[0].text, /not connected/);
+
+    // A brick command tries again and says why it cannot reach the brick.
+    await vscode.commands.executeCommand('ev3-c.stop');
+    assert.equal(counter.attempts, 2);
+    assert.equal(errors().length, 1);
+    assert.match(errors()[0].text, /not installed, or has not run yet/);
+    assert.match(errors()[0].text, /missing_binary/);
+});
+
+test('with cockpit, EVƎ C connects as "EVƎ C (VS Code)" with its version and the status bar follows the slot', async () => {
+    const { fake, connects } = installCockpit();
+    activate(context());
+    await settle();
+    assert.deepEqual(errors(), []);
+    assert.deepEqual(connects, [{ name: CLIENT_NAME, version: '1.2.3' }]);
+    assert.equal(typeof fake.questionHandler, 'function', 'questions for a person are answered');
     assert.deepEqual([...stub.__state.commands.keys()].sort(), [...ALL_COMMANDS].sort());
     assert.deepEqual(Object.values(COMMAND_IDS).sort(), [...ALL_COMMANDS].sort());
 
     const item = stub.__state.statusBarItems[0];
     assert.equal(item.visible, true);
     assert.match(item.text, /idle/i);
-    consumer.setRunning(true);
+    fake.setRunning(true, 1);
     assert.match(item.text, /running/i);
 
-    // A lost connection ends cockpit's subscription; after the reconnect the bar asks again.
-    consumer.disconnect();
-    consumer.running = false;
-    consumer.reconnect();
+    // Signed out, the subscription ends; once the brick is back the bar asks again.
+    fake.signOut();
+    assert.match(item.text, /no brick/i);
+    fake.running = false;
+    fake.signIn();
+    await settle();
     await settle();
     assert.match(item.text, /idle/i);
-    consumer.setRunning(true);
+    fake.setRunning(true, 2);
     assert.match(item.text, /running/i, 'the status follows the new subscription');
+});
+
+test('a daemon lost for good is connected afresh by the next brick command', async () => {
+    const first = installCockpit();
+    activate(context());
+    await settle();
+    const second = new FakeCockpitClient();
+    cockpitConnector.connect = async () => second.asClient();
+
+    first.fake.lose(new Error('gone'));
+    assert.equal(first.fake.disposed, true);
+    assert.match(stub.__state.statusBarItems[0].text, /not connected/);
+
+    await vscode.commands.executeCommand('ev3-c.stop');
+    assert.deepEqual(brickCalls(second), [['programs/stop', { brick: BRICK_ID }]]);
 });
 
 test('package.json contributes every command under the "EV3 C" category, and both settings', () => {
@@ -144,55 +183,65 @@ test('Build in an untrusted workspace is refused with a message and starts no co
     assert.match(stub.__state.log[0].line, /ev3-c\.build failed/);
 });
 
-test('Upload and Run in an untrusted workspace are refused and call no cockpit method', async () => {
-    const consumer = installCockpit(1);
-    await activate(context());
+test('Upload and Run in an untrusted workspace are refused and send cockpit nothing', async () => {
+    const { fake } = installCockpit();
+    activate(context());
     await settle();
     projectFolder({ name: 'hello' });
     stub.__state.isTrusted = false;
     for (const id of ['ev3-c.upload', 'ev3-c.run']) {
-        consumer.calls.length = 0;
+        fake.calls.length = 0;
         stub.__state.messages.length = 0;
         await vscode.commands.executeCommand(id);
-        assert.deepEqual(consumer.calls, [], id);
+        assert.deepEqual(brickCalls(fake), [], id);
         assert.equal(stub.__state.messages.length, 1, id);
         assert.match(stub.__state.messages[0].text, /trust/i, id);
     }
 });
 
-test('Run with no project folder open shows a message and calls no cockpit method', async () => {
-    const consumer = installCockpit(1);
-    await activate(context());
+test('Run with no project folder open shows a message and sends cockpit nothing', async () => {
+    const { fake } = installCockpit();
+    activate(context());
     await settle();
-    consumer.calls.length = 0;
+    fake.calls.length = 0;
     await vscode.commands.executeCommand('ev3-c.run');
-    assert.deepEqual(consumer.calls, []);
+    assert.deepEqual(brickCalls(fake), []);
     assert.equal(errors().length, 1);
     assert.match(errors()[0].text, /ev3c\.json/);
 });
 
-test('Run with an invalid project name shows the core\'s validation message and calls no cockpit method', async () => {
-    const consumer = installCockpit(1);
-    await activate(context());
+test('Run with an invalid project name shows the core\'s validation message and sends cockpit nothing', async () => {
+    const { fake } = installCockpit();
+    activate(context());
     await settle();
     projectFolder({ name: 'Hello World' });
-    consumer.calls.length = 0;
+    fake.calls.length = 0;
     await vscode.commands.executeCommand('ev3-c.run');
-    assert.deepEqual(consumer.calls, []);
+    assert.deepEqual(brickCalls(fake), []);
     assert.equal(errors().length, 1);
     assert.match(errors()[0].text, /Project name "Hello World" is not valid/);
 });
 
-test('Stop and Emergency Stop call cockpit\'s stopProgram and emergencyStop on the configured brick', async () => {
-    const consumer = installCockpit(1);
-    stub.__state.config.set('ev3-c.brick', 'usb-0016533f1234');
-    await activate(context());
+test('Stop and Emergency Stop reach the brick the setting names', async () => {
+    const { fake } = installCockpit();
+    stub.__state.config.set('ev3-c.brick', 'AAA');
+    activate(context());
     await settle();
-    consumer.calls.length = 0;
+    fake.calls.length = 0;
     await vscode.commands.executeCommand('ev3-c.stop');
     await vscode.commands.executeCommand('ev3-c.emergencyStop');
-    assert.deepEqual(consumer.calls.filter(c => c[0] !== 'listBricks'), [
-        ['stopProgram', 'usb-0016533f1234'],
-        ['emergencyStop', 'usb-0016533f1234'],
+    assert.deepEqual(brickCalls(fake), [
+        ['programs/stop', { brick: BRICK_ID }],
+        ['programs/emergencyStop', { brick: BRICK_ID }],
     ]);
+});
+
+test('a brick another client is writing to is named in the error', async () => {
+    const { fake } = installCockpit();
+    activate(context());
+    await settle();
+    fake.failures.set('programs/stop', new FakeCockpitError('brick_busy', 'busy', { holder: 'ev3 c run (terminal)' }));
+    await vscode.commands.executeCommand('ev3-c.stop');
+    assert.equal(errors().length, 1);
+    assert.match(errors()[0].text, /ev3 c run \(terminal\) is writing to the brick/);
 });

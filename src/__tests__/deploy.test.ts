@@ -73,12 +73,11 @@ test('deploy compares MD5 without regard to letter case', async () => {
     assert.equal(report.uploaded.length, 0);
 });
 
-test('deploy creates a missing project folder and uploads everything', async () => {
+test('deploy into a missing project folder uploads everything', async () => {
     const port = brick();
 
     const report = await deploy(port, artifacts());
 
-    assert.ok(port.calls.includes(`makeDirectory ${BRICK_DIR}`));
     assert.equal(report.uploaded.length, 3);
     assert.equal(port.text(`${BRICK_DIR}/ev3c-sup`), 'supervisor v1');
 });
@@ -94,7 +93,7 @@ test('deploy refuses while a program runs and touches nothing on the brick', asy
         assert.match(error.message, /stop it/i);
         return true;
     });
-    assert.deepEqual(port.calls, ['isProgramRunning']);
+    assert.deepEqual(port.calls, ['programState']);
 });
 
 test('a failed upload is retried once', async () => {
@@ -120,4 +119,16 @@ test('an upload that fails twice is reported with the cockpit error code', async
     });
     assert.equal(writes(port).filter(call => call.endsWith('/robot.rbf')).length, 2);
     assert.equal(port.has(`${BRICK_DIR}/ev3c-sup`), false, 'nothing is uploaded after the failure');
+});
+
+test('an upload whose outcome is unknown is not retried', async () => {
+    const port = brick();
+    port.writeFailures.set(`${BRICK_DIR}/prog`, ['outcome_unknown']);
+
+    await assert.rejects(deploy(port, artifacts()), (error: unknown) => {
+        assert.ok(error instanceof BrickOperationError);
+        assert.equal(error.code, 'outcome_unknown');
+        return true;
+    });
+    assert.equal(writes(port).filter(call => call.endsWith('/prog')).length, 1);
 });

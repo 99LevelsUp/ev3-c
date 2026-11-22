@@ -1,12 +1,16 @@
 import * as crypto from 'node:crypto';
-import { BrickEvent, brickErrorCode, BrickFileReader, BrickPort, Clock, ProgramState, systemClock } from '../brickPort';
+import * as path from 'node:path';
+import { BuildArtifact } from '../build/buildProject';
+import { BrickEvent, brickErrorCode, BrickFileReader, BrickPort, Clock, DeployItem, ProgramState, StartReport, systemClock } from '../brickPort';
 import { brickProjectDir, listRunNumbers } from './runFolders';
 import { readRunRecord, resultFromRecord, RunRecordError, RunResult } from './runResults';
 
 // Run, Stop, and Emergency Stop. A Run is tied to its result by a launch ID, not by a
 // predicted run number: a run started from the brick menu, or one still finishing,
-// could take the predicted number first. EVƎ C writes the ID into `<project>/.req`
-// before starting the launcher; the supervisor moves it into the run's completion record.
+// could take the predicted number first. EVƎ C puts the ID into `<project>/.req` in the
+// same cockpit operation that uploads the project and starts the launcher, so no other
+// client can start something in between; the supervisor moves the ID into the run's
+// completion record.
 
 /** How long EVƎ C waits for the completion record after the slot stops. */
 export const RESULT_WAIT_MS = 10_000;
@@ -14,9 +18,13 @@ export const RESULT_WAIT_MS = 10_000;
 const POLL_INTERVAL_MS = 1000;
 const REQUEST_FILE = '.req';
 
-// Cockpit refused the start, so no supervisor will take the launch ID. After any other
-// failure the launcher may already run, and its supervisor may still read the request.
-const NOT_STARTED_CODES = new Set(['program_running', 'program_not_found', 'access_denied', 'not_connected']);
+// Cockpit refused or cancelled the start, so no supervisor will take the launch ID. After
+// any other failure, `outcome_unknown` above all, the launcher may already run, and its
+// supervisor may still read the request.
+const NOT_STARTED_CODES = new Set([
+    'program_running', 'program_not_found', 'access_denied', 'not_connected', 'brick_busy', 'brick_not_found',
+    'brick_ambiguous', 'cancelled', 'invalid_request',
+]);
 
 export interface RunProjectOptions {
     port: BrickPort;
@@ -24,6 +32,8 @@ export interface RunProjectOptions {
     reader: BrickFileReader;
     /** Project name; the launcher is `<project>/<project>.rbf` in the brick's projects folder. */
     project: string;
+    /** The build's artifacts, uploaded as part of the start when they differ from the brick's. */
+    artifacts: readonly BuildArtifact[];
     /** Launch IDs of the runs EVƎ C started, with their PC start times; this run is added. */
     launches: Map<string, Date>;
     clock?: Clock;
@@ -32,16 +42,16 @@ export interface RunProjectOptions {
 }
 
 export type RunOutcome =
-    | { readonly kind: 'result'; readonly result: RunResult }
+    | { readonly kind: 'result'; readonly result: RunResult; readonly start: StartReport }
     /** The completion record did not appear in time; the run folder stays on the brick for later. */
-    | { readonly kind: 'no-result'; readonly launchId: string; readonly startedAt: Date };
+    | { readonly kind: 'no-result'; readonly launchId: string; readonly startedAt: Date; readonly start: StartReport };
 
 /**
- * Starts the project's launcher and waits until the run ends and its completion record
- * is on the brick. The wait for the record starts when cockpit reports the slot stopped,
- * when `runProgram` returns without a running slot, or when the brick reconnects with
- * no program running; it polls at most once per second for up to 10 s, and a reconnect
- * during that time starts the 10 s again.
+ * Uploads the project, starts its launcher, and waits until the run ends and its
+ * completion record is on the brick. The run has ended when cockpit reports the slot
+ * stopped under this start's number or a later one, or when the start was not seen
+ * running. The wait for the record then polls at most once per second for up to 10 s,
+ * and a reconnect during that time starts the 10 s again.
  */
 export async function runProject(options: RunProjectOptions): Promise<RunOutcome> {
     const { port, reader, project, launches } = options;
@@ -52,30 +62,33 @@ export async function runProject(options: RunProjectOptions): Promise<RunOutcome
     const runs = await listRunNumbers(port, project);
     const newestBefore = runs.length > 0 ? runs[runs.length - 1] : 0;
 
+    // Subscribed before the start, so the end of a short run is never missed.
     const wait = new ResultWait(port, clock);
-    const subscription = port.onBrickEvent(event => wait.onEvent(event));
+    const subscription = await port.onBrickEvent(event => wait.onEvent(event));
     try {
         const launchId = (options.newLaunchId ?? newLaunchId)();
-        await port.writeFile(requestPath, Buffer.from(`${launchId}\n`, 'utf8'));
         const startedAt = new Date(clock.now());
         launches.set(launchId, startedAt);
-        let state: ProgramState;
+        const files: DeployItem[] = [
+            ...options.artifacts.map(artifact => ({
+                brickPath: artifact.brickPath,
+                source: { localPath: path.resolve(artifact.localPath) },
+                skipIfSame: true,
+            })),
+            { brickPath: requestPath, source: { data: Buffer.from(`${launchId}\n`, 'utf8') } },
+        ];
+        let start: StartReport;
         try {
-            // Events before this point say nothing about this run; a program that ends
-            // while runProgram is still returning sends its event after it.
-            wait.arm();
-            state = await port.runProgram(`${dir}/${project}.rbf`);
+            start = await port.deployAndRun(files, `${dir}/${project}.rbf`);
         } catch (error) {
             const code = brickErrorCode(error);
             if (code !== undefined && NOT_STARTED_CODES.has(code)) {
                 launches.delete(launchId);
-                await port.remove(requestPath).catch(() => undefined);
+                await port.removePaths([requestPath]).catch(() => undefined);
             }
             throw error;
         }
-        if (!state.running) {
-            wait.stopped();
-        }
+        wait.started(start);
         await wait.slotStopped;
 
         // Runs that ended with another launch ID, or none; their records are final.
@@ -106,9 +119,9 @@ export async function runProject(options: RunProjectOptions): Promise<RunOutcome
             return undefined;
         });
         if (found === undefined) {
-            return { kind: 'no-result', launchId, startedAt };
+            return { kind: 'no-result', launchId, startedAt, start };
         }
-        return { kind: 'result', result: await resultFromRecord(reader, project, found.run, found.record, launches) };
+        return { kind: 'result', result: await resultFromRecord(reader, project, found.run, found.record, launches), start };
     } finally {
         subscription.dispose();
     }
@@ -128,11 +141,17 @@ function newLaunchId(): string {
     return crypto.randomBytes(8).toString('hex');
 }
 
-/** Waits for the slot to stop, then polls until a deadline that a reconnect moves. */
+/**
+ * Waits for the slot to stop, then polls until a deadline that a reconnect moves. States
+ * heard before the start's number is known are kept, so a run that ends while the start
+ * is still returning is not missed.
+ */
 class ResultWait {
     readonly slotStopped: Promise<void>;
     private resolveStopped!: () => void;
-    private isArmed = false;
+    private runSeq: number | undefined;
+    /** The highest start number heard together with a stopped slot or a later start. */
+    private endedSeq = 0;
     private isStopped = false;
     private deadline = Number.POSITIVE_INFINITY;
 
@@ -140,19 +159,22 @@ class ResultWait {
         this.slotStopped = new Promise(resolve => { this.resolveStopped = resolve; });
     }
 
-    /** From now on events belong to this run. */
-    arm(): void {
-        this.isArmed = true;
+    /** The start returned: from now on states are measured against its number. */
+    started(start: StartReport): void {
+        this.runSeq = start.runSeq;
+        if (start.outcome === 'not_seen_running') {
+            this.stopped();
+        } else if (start.outcome === 'uncertain') {
+            // The reply to the start was lost; the brick's state says whether anything runs.
+            this.check();
+        } else {
+            this.judge();
+        }
     }
 
     onEvent(event: BrickEvent): void {
-        if (!this.isArmed) {
-            return;
-        }
         if (event.kind === 'program') {
-            if (!event.running) {
-                this.stopped();
-            }
+            this.note(event.state);
             return;
         }
         if (this.isStopped) {
@@ -160,13 +182,8 @@ class ResultWait {
             this.deadline = this.clock.now() + RESULT_WAIT_MS;
             return;
         }
-        // The "stopped" event may have been missed while disconnected; the wait starts
-        // only if the program has really ended.
-        void this.port.isProgramRunning().then(state => {
-            if (!state.running) {
-                this.stopped();
-            }
-        }, () => undefined);
+        // The end may have been missed while disconnected.
+        this.check();
     }
 
     stopped(): void {
@@ -192,6 +209,26 @@ class ResultWait {
                 return undefined;
             }
             await this.clock.sleep(POLL_INTERVAL_MS);
+        }
+    }
+
+    private check(): void {
+        if (this.runSeq === undefined) {
+            return;
+        }
+        void this.port.programState().then(state => this.note(state), () => undefined);
+    }
+
+    private note(state: ProgramState): void {
+        // A stopped slot ends the start it is told with; any later start ends this one too.
+        const ended = state.running ? state.runSeq - 1 : state.runSeq;
+        this.endedSeq = Math.max(this.endedSeq, ended);
+        this.judge();
+    }
+
+    private judge(): void {
+        if (this.runSeq !== undefined && this.endedSeq >= this.runSeq) {
+            this.stopped();
         }
     }
 }

@@ -38,14 +38,14 @@ test('a project without a runs folder has no runs', async () => {
     assert.deepEqual(await listRunNumbers(port, 'robot'), []);
 });
 
-test('"delete all but the last 2" removes the older folders one by one and reports one still present', async () => {
+test('"delete all but the last 2" removes the older folders in one call and reports one still present', async () => {
     const port = brickWithRuns([1, 2, 3, 4, 5]);
-    // A folder with a subfolder survives cockpit's recursive remove, which deletes one level only.
+    // A folder with a subfolder survives the fake's recursive removal, which deletes one level only.
     port.mkdirs(`${RUNS}/2/data`);
 
     const report = await deleteRuns(port, 'robot', { keepLast: 2 });
 
-    assert.deepEqual(removals(port), [`remove -r ${RUNS}/1`, `remove -r ${RUNS}/2`, `remove -r ${RUNS}/3`]);
+    assert.deepEqual(removals(port), [`removePaths -r ${RUNS}/1 ${RUNS}/2 ${RUNS}/3`]);
     assert.equal(port.calls.at(-1), `list ${RUNS}`, 'the runs folder is listed again after deleting');
     assert.deepEqual(report, { deleted: [1, 3], kept: [4, 5], stillPresent: [2] });
     assert.equal(port.text(`${RUNS}/next`), '6', 'the run counter is never touched');
