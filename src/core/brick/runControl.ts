@@ -182,8 +182,10 @@ class ResultWait {
             this.deadline = this.clock.now() + RESULT_WAIT_MS;
             return;
         }
-        // The end may have been missed while disconnected.
-        this.check();
+        // The end may have been missed while disconnected. A daemon that replaced the one
+        // that started this run counts starts from 0 again, so after a reconnect a stopped
+        // slot ends the run whatever its number.
+        this.check(true);
     }
 
     stopped(): void {
@@ -212,11 +214,18 @@ class ResultWait {
         }
     }
 
-    private check(): void {
+    /** Asks the brick's state once the start's number is known; `anyStop` takes any stopped slot as the end. */
+    private check(anyStop = false): void {
         if (this.runSeq === undefined) {
             return;
         }
-        void this.port.programState().then(state => this.note(state), () => undefined);
+        void this.port.programState().then(state => {
+            if (anyStop && !state.running) {
+                this.stopped();
+            } else {
+                this.note(state);
+            }
+        }, () => undefined);
     }
 
     private note(state: ProgramState): void {

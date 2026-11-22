@@ -249,6 +249,25 @@ test('a reconnect after the program ended while disconnected starts the result w
     assert.equal(outcome.result.run, 2);
 });
 
+test('a daemon replaced during the run, which counts starts from 0 again, still ends the wait', async () => {
+    const { port, run } = setup();
+    port.onRun = () => {
+        port.putFile(`${RUNS}/2/res`, res(2, takeLaunchId(port)));
+        setImmediate(() => {
+            // The new daemon knows no earlier start; the renewed subscription tells its state.
+            port.runSeq = 0;
+            port.running = false;
+            port.emitState();
+            port.emit({ kind: 'reconnected' });
+        });
+    };
+
+    const outcome = await run();
+
+    assert.ok(outcome.kind === 'result');
+    assert.equal(outcome.result.run, 2);
+});
+
 test('a Run refused because a program runs uploads nothing and records no start', async () => {
     const { port, launches, run } = setup();
     port.running = true;
