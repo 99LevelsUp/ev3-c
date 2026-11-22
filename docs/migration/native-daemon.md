@@ -1,0 +1,107 @@
+# Moving EVƎ C to the native cockpit daemon
+
+EVƎ Cockpit replaces its per-user daemon with one native binary, `ev3-cockpitd`, whose contract
+is generated from JSON Schema (contract version 2). The cockpit removes the old daemon and its
+hand-written contract in one step at its switch (unit U17 of the cockpit plan), with no shim.
+This document records what EVƎ C uses today and what replaces it.
+
+The reference is the cockpit's `docs/api-for-consumers.md`, section "Moving to the native daemon:
+what changes in the package", and `contract/methods.json`. The column "After the switch" there is
+planned, not confirmed.
+
+## Where EVƎ C starts from
+
+EVƎ C never used the Node daemon's client (`CockpitClient`, `WireErrorCode`, `clientPaths`,
+`installedLaunch`, launch options). It calls the VS Code extension API v1:
+`vscode.extensions.getExtension('99LevelsUp.ev3-cockpit').activate()`, then
+`registerConsumer('ev3-c')`. Its types are copied into `src/host/cockpitTypes.ts`. The move
+therefore goes from API v1 straight to the native client; the Node daemon stage is skipped.
+
+The cockpit's documentation already says its extension exports nothing, so API v1 may be gone
+from current cockpit builds (see "Answers from the cockpit").
+
+## Today → native
+
+| Today (API v1, `CockpitConsumer`) | Native (`NativeCockpitClient`, contract 2) | Used in EVƎ C | Notes |
+|---|---|---|---|
+| `getExtension(id).activate()`, `apiVersion === 1`, `registerConsumer('ev3-c')` | `NativeCockpitClient.connect({ name, kind: 'addon', version })`; no `daemon` option, the client starts what `install.json` records | `src/extension.ts`, `src/host/cockpitAdapter.ts` `connectCockpit` | Start failures are a `DaemonStartError` with `failure`; a contract mismatch is `failure: 'contract_mismatch'`, not a version check of ours |
+| consumer `dispose()` | `client.dispose()` | `src/extension.ts` | Closes the connection and every subscription |
+| `listBricks()` → `ApiBrick { signedIn, active, … }` | `client.bricks()` → `ContractBrick { connected, reconnecting?, holders, … }` | `cockpitAdapter.ts` `isBrickOnline`, `statusBar.ts` | `signedIn` becomes `connected`; there is no `active` |
+| `getActiveBrickId()`, `onActiveBrickChanged` | none: each client keeps its own active brick (`activeBrick()`, `setActiveBrick()`), and setting it starts foreground telemetry | `resolveBrickId` for the setting `ev3-c.brick = "active"`, `statusBar.ts` | EVƎ C can no longer read the brick picked in the cockpit's UI. EVƎ C does not call `setActiveBrick`, because it shows no telemetry (decision of 22.11.2026) |
+| `onBricksChanged` | `client.onBricksChanged` | `cockpitAdapter.ts`, `statusBar.ts` | Same meaning |
+| `list(brick, path)` → `FsEntry[]` | `files/list { brick, path }` → `FsEntry[]` | `deploy.ts`, `runFolders.ts`, `runResults.ts` | Same entry shape (`md5` lowercase hex) |
+| `exists(brick, path)` | `files/exists` | `deploy.ts`, `runFolders.ts` | |
+| `readFile(brick, path)` → bytes | `files/read { path, toLocalPath }` into a private temporary file | `runResults.ts` | Inline reads stop at 64 KiB, and the daemon refuses one only after the whole file crossed the link; a run's output may be larger (`outputCapKiB`), so EVƎ C always reads to a local file |
+| `writeFile(brick, path, bytes)` | `files/write { path, fromLocalPath }` (absolute path) or `{ content }` (base64, at most 4 KiB) | `deploy.ts` (Upload) | Folders are created by the write |
+| `makeDirectory(brick, path)` | `files/makeDirectory` | `deploy.ts` | No longer needed before a write |
+| `remove(brick, path, { recursive })` | `files/remove` → `RemoveReport { leftBehind }`; several paths under one lease: `files/removePaths` | `runFolders.ts` `deleteRuns`, `runControl.ts` (`.req` cleanup) | `leftBehind` says what a recursive remove left; EVƎ C used to list again to find out |
+| `writeFile(.req)` + `runProgram(brick, rbf)` | `programs/deployAndRun { files, runPath }` → `DeployResult { outcome, runSeq, uploaded, skipped }`, one lease | `runControl.ts` `runProject` (Run) | Binary, supervisor and launcher go by `localPath` with `skipIfSameMd5`; `.req` goes inline. Nothing runs → checked inside the lease |
+| `runProgram` → `ProgramState { running }` | `DeployResult.outcome`: `started`, `not_seen_running`, `uncertain` | `runControl.ts` | `uncertain`: read `programs/status`, never start again |
+| `stopProgram(brick)` | `programs/stop` → `ProgramState` | `runControl.ts`, Stop command | Never waits for a lease; `stoppedBy` names the client |
+| `emergencyStop(brick)` | `programs/emergencyStop` | Emergency Stop command | |
+| `isProgramRunning(brick)` | `programs/status` (`waitMs` optional) | `deploy.ts`, `runFolders.ts`, `runControl.ts`, `statusBar.ts` | |
+| `onProgramStateChanged(brick, listener)`; ends silently when the session ends | `client.subscribePrograms(brick, listener)` → `{ state, dispose }`; `ProgramState { running, runSeq, stoppedBy? }` | `cockpitAdapter.ts` `BrickEvents`, `runControl.ts`, `statusBar.ts` | The run's end is `running: false` with `runSeq >=` the run's own; it replaces the "armed" wait. Still ends silently when the brick is signed out |
+| no reconnect event; EVƎ C watched `signedIn` | `bricks/reconnected` notification; `client.onReconnected` for a new daemon | `cockpitAdapter.ts` | |
+| error `code` (string) | `error.code` typed as `nativeContract.ErrorCode`; `data.holder`, `data.candidates`, `data.command` | `errorMessages.ts`, `runControl.ts`, `deploy.ts` | `kind` (error class) is gone; new codes: `brick_busy`, `brick_ambiguous`, `brick_not_found`, `brick_unreachable`, `link_lost`, `needs_person`, `daemon_unavailable`, `outcome_unknown`, `cancelled`, `invalid_request` |
+| no questions | `client.onQuestion((q, { signal }) => 'yes' \| 'no' \| 'keep')` | new in `src/host` | An add-on may be asked `sweep` for its own transfers; `signal` aborts when the daemon withdraws the question |
+| no cancellation | `request(method, params, { signal })` → `cancelled` | not used yet | For Ctrl+C in `ev3 c run` |
+| no log | `log/notice { level, text }` | not used yet | For toasts EVƎ C shows |
+
+Exports EVƎ C does not need: `installedNativeLaunch` and `nativeChannelFiles`/`nativeStateRoot`
+(the client reads `install.json` itself), `ensureNativeDaemon`, `decideOnDaemon`,
+`packagedDaemon`, `developmentDaemon`, `DAEMON_MANIFEST`. An add-on never replaces the daemon and
+never sends `daemon/exit`.
+
+`extensionDependencies` on `99LevelsUp.ev3-cockpit` stays: the cockpit's extension writes
+`install.json` when it connects, and without it the first connect can fail with `missing_binary`.
+
+## How EVƎ C reaches the library before it is published
+
+`@ev3-cockpit/client` is not on npm yet. `scripts/stage-cockpit-client.cjs` stages it from a
+compiled cockpit checkout (`npm run compile` there) with the cockpit's own `stageClient`, packs it
+into `.cockpit-client/ev3-cockpit-client.tgz`, and `package.json` depends on that tarball.
+Replace the dependency with the published version once it exists.
+
+Only `src/cockpit/nativeCockpit.ts` imports the library (a unit test guards this), always as `@ev3-cockpit/client`, so the
+renames at the switch (`NativeCockpitClient` → `CockpitClient`, the contract at the top level)
+touch one file.
+
+## Answers from the cockpit (22.11.2026)
+
+1. **The active brick** cannot be read today: each client keeps its own foreground brick and the
+   daemon tells no one else, and the extension exports nothing. The cockpit puts the question to
+   its owner (one proposal: `daemon/status` says which brick each client shows). Until then
+   `ev3-c.brick = "active"` means the only connected brick; with several, the author sets the
+   setting. The rule lives in one function, `resolveBrick` in `src/cockpit/nativeCockpit.ts`.
+2. **API v1** left the cockpit's local master on 20.11.2026 (cf8c8e6), which is not pushed;
+   everything published still carries it, so EVƎ C's `main` works against published cockpit
+   builds. The cockpit tells EVƎ C when its master goes to origin and when U17 runs; this
+   branch merges at one of those, at the latest with U17. Until then it is neither merged nor
+   pushed.
+3. **The package** is staged again from `feat/native-daemon` in the cockpit's
+   `dist/npm/client`. EVƎ C stages its own copy with `scripts/stage-cockpit-client.cjs`.
+4. **Reading files** is not limited to one read per second with the native daemon: it serialises
+   transfers per brick and releases each firmware slot. EVƎ C no longer paces its reads
+   (`PacedReader` is gone).
+
+## What changed in EVƎ C
+
+- `BrickPort` follows the native contract: `writeFile` takes a local path or a few bytes,
+  `removePaths` replaces `remove` and `makeDirectory`, `deployAndRun` replaces `runProgram`,
+  `programState` replaces `isProgramRunning`, states carry `runSeq`, and `onBrickEvent` resolves
+  once its subscription is live.
+- **Run** uploads the binary, the supervisor and the launcher (`skipIfSameMd5`) and the launch
+  request (inline) in the one `programs/deployAndRun` that starts the launcher. The run has ended
+  when a stopped state arrives with `runSeq` at least the start's own, or a later start shows;
+  `not_seen_running` starts the result wait at once, `uncertain` reads `programs/status` and is
+  never repeated. States heard before the start returns are kept, so a short run is not missed.
+- **Upload** without a run still writes file by file after its own MD5 check, and retries a
+  write once only after `not_connected`, `link_lost` or `transport_failed`.
+- **Reads** go to a private temporary file (iles/read with 	oLocalPath), so a run's output
+  larger than 64 KiB is read too.
+- **Delete Runs** removes the chosen run folders in one `files/removePaths` and lists the runs
+  folder again to report what is still there.
+- The host connects on first need (and in the background at activation) as
+  `EVƎ C (VS Code)`, kind `addon`, and connects afresh after the library reports the daemon
+  lost. Start failures and the new error codes have their own messages; `brick_busy` names the
+  client holding the brick. Questions for a person go to a VS Code notification.
