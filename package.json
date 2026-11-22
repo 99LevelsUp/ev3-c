@@ -108,5 +108,8 @@
         "esbuild": "^0.21.0",
         "eslint": "^8.57.0",
         "typescript": "^5.5.0"
+    },
+    "dependencies": {
+        "@ev3-cockpit/client": "file:.cockpit-client/ev3-cockpit-client.tgz"
     }
 }
