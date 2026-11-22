@@ -97,7 +97,7 @@ touch one file.
   never repeated. States heard before the start returns are kept, so a short run is not missed.
 - **Upload** without a run still writes file by file after its own MD5 check, and retries a
   write once only after `not_connected`, `link_lost` or `transport_failed`.
-- **Reads** go to a private temporary file (iles/read with 	oLocalPath), so a run's output
+- **Reads** go to a private temporary file (`files/read` with `toLocalPath`), so a run's output
   larger than 64 KiB is read too.
 - **Delete Runs** removes the chosen run folders in one `files/removePaths` and lists the runs
   folder again to report what is still there.
