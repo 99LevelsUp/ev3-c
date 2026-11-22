@@ -178,6 +178,15 @@ export class FakeCockpitClient {
         const brickId = String(params.brick ?? '');
         switch (method) {
         case 'files/list': return { entries: [{ name: 'prog', kind: 'file', bytes: 3, md5: 'abc' }] };
+        case 'bricks/connect': {
+            const found = this.brick(brickId);
+            if (found === undefined) {
+                throw new FakeCockpitError('brick_not_found');
+            }
+            this.setConnected(found.brickId, true);
+            return this.brick(found.brickId);
+        }
+        case 'bricks/disconnect': return { stillHeldBy: [] };
         case 'files/exists': return { exists: true };
         case 'files/read': {
             const data = this.files.get(String(params.path)) ?? new Uint8Array();

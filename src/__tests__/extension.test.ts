@@ -72,7 +72,7 @@ function projectFolder(config: object | undefined): string {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const errors = () => stub.__state.messages.filter(m => m.level === 'error');
-const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => method !== 'programs/subscribe' && method !== 'programs/status');
+const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => !['programs/subscribe', 'programs/status', 'bricks/connect'].includes(method));
 
 beforeEach(() => {
     stub.__reset();
@@ -234,6 +234,26 @@ test('Stop and Emergency Stop reach the brick the setting names', async () => {
         ['programs/stop', { brick: BRICK_ID }],
         ['programs/emergencyStop', { brick: BRICK_ID }],
     ]);
+    assert.deepEqual(fake.calls.filter(([method]) => method === 'bricks/connect'), [['bricks/connect', { brick: BRICK_ID }]],
+        'EVƎ C holds the brick itself, once while it stays connected');
+});
+
+test('another brick in the setting is connected and the previous hold released', async () => {
+    const { fake } = installCockpit();
+    fake.brickList.push({ ...fake.brickList[0], brickId: 'bt-001653000bbb', name: 'BBB', connected: false });
+    stub.__state.config.set('ev3-c.brick', 'AAA');
+    activate(context());
+    await settle();
+    await vscode.commands.executeCommand('ev3-c.stop');
+    stub.__state.config.set('ev3-c.brick', 'BBB');
+    await vscode.commands.executeCommand('ev3-c.stop');
+    await settle();
+    assert.deepEqual(fake.calls.filter(([method]) => method.startsWith('bricks/')), [
+        ['bricks/connect', { brick: BRICK_ID }],
+        ['bricks/connect', { brick: 'bt-001653000bbb' }],
+        ['bricks/disconnect', { brick: BRICK_ID }],
+    ]);
+    assert.deepEqual(errors(), []);
 });
 
 test('a brick another client is writing to is named in the error', async () => {

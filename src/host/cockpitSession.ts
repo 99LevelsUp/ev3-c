@@ -1,5 +1,5 @@
 import { BrickFileReader } from '../core';
-import { CockpitClient, CockpitPort, createBrickPort, resolveBrick } from '../cockpit/nativeCockpit';
+import { CockpitClient, CockpitPort, createBrickPort, isBrickOnline, resolveBrick } from '../cockpit/nativeCockpit';
 
 // The host's connection to EVƎ Cockpit's daemon. It connects on first use, not at
 // activation, so a daemon that is not ready yet (the cockpit records how to start it when
@@ -45,6 +45,8 @@ export class CockpitSession {
     private connecting: Promise<Connected> | undefined;
     private readonly listeners = new Set<(connected: Connected | undefined) => void>();
     private disposed = false;
+    /** The brick EVƎ C holds, on the connection it holds it on. */
+    private held: { readonly connected: Connected; readonly brickId: string } | undefined;
 
     constructor(private readonly connect: () => Promise<CockpitClient>) {}
 
@@ -88,10 +90,26 @@ export class CockpitSession {
         return { dispose: () => this.listeners.delete(listener) };
     }
 
-    /** The port of the brick the setting names now; connects first when needed. */
+    /**
+     * The port of the brick the setting names now; connects to the cockpit first when needed.
+     * EVƎ C holds the brick itself (`bricks/connect` without a hold), so it stays connected
+     * for EVƎ C when whoever connected it lets it go. The hold ends with EVƎ C's connection,
+     * the library renews it on a new daemon, and a different brick releases the previous one.
+     */
     async brick(setting: string): Promise<BrickHandle> {
-        const { client, ports } = await this.ready();
-        return ports.get(resolveBrick(client, setting));
+        const connected = await this.ready();
+        const { client, ports } = connected;
+        const wanted = resolveBrick(client, setting);
+        if (this.held?.connected !== connected || this.held.brickId !== wanted || !isBrickOnline(client.bricks(), wanted)) {
+            const brickId = (await client.request('bricks/connect', { brick: wanted })).brickId;
+            const previous = this.held;
+            this.held = { connected, brickId };
+            if (previous?.connected === connected && previous.brickId !== brickId) {
+                void client.request('bricks/disconnect', { brick: previous.brickId }).catch(() => undefined);
+            }
+            return ports.get(brickId);
+        }
+        return ports.get(wanted);
     }
 
     private fire(connected: Connected | undefined): void {
