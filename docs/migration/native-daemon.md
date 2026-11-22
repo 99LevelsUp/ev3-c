@@ -105,3 +105,16 @@ touch one file.
   `EVƎ C (VS Code)`, kind `addon`, and connects afresh after the library reports the daemon
   lost. Start failures and the new error codes have their own messages; `brick_busy` names the
   client holding the brick. Questions for a person go to a VS Code notification.
+- **The brick is held by EVƎ C** (`bricks/connect` without `hold`, as the cockpit recommends), so
+  it does not go when whoever else connected it lets it go. The hold ends with EVƎ C's
+  connection, the library renews it on a new daemon, and naming another brick releases it.
+- **A replaced daemon counts starts from 0 again** (the counter lives in its memory), so after a
+  reconnect a stopped slot ends the run's wait whatever its `runSeq`. The cockpit takes this to
+  its owner: persist the counter, or document the reset.
+
+## Checked against the native daemon
+
+`tests/replay/deploy-and-run.cjs` replays the cockpit's `usb-deploy-and-run-ccc` scenario through
+EVƎ C's session, brick hold and port against `ev3-cockpitd` in replay mode; no brick is needed and
+the steps are in the script. It passed on 22.11.2026 with daemon and client 0.2.549: the brick
+held, the start `started` with `runSeq` 1, the running and stopped states, the folder removed.
