@@ -72,7 +72,7 @@ function projectFolder(config: object | undefined): string {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const errors = () => stub.__state.messages.filter(m => m.level === 'error');
-const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => !['programs/subscribe', 'programs/status', 'bricks/connect', 'daemon/status'].includes(method));
+const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => !['programs/subscribe', 'programs/status', 'bricks/connect', 'daemon/status', 'log/notice'].includes(method));
 
 beforeEach(() => {
     stub.__reset();
@@ -177,10 +177,12 @@ test('Build in an untrusted workspace is refused with a message and starts no co
     assert.deepEqual(builds, []);
     assert.equal(stub.__state.messages.length, 1);
     assert.match(stub.__state.messages[0].text, /trust/i);
-    // The failure lands in the log at error level, so it lines up with EVƎ Cockpit's log.
-    assert.equal(stub.__state.log.length, 1);
+    // The failure lands in the log at error level, with the message shown, so it lines up with EVƎ Cockpit's log.
+    assert.equal(stub.__state.log.length, 2);
     assert.equal(stub.__state.log[0].level, 'error');
     assert.match(stub.__state.log[0].line, /ev3-c\.build failed/);
+    assert.equal(stub.__state.log[1].level, 'error');
+    assert.match(stub.__state.log[1].line, /^Shown: .*trust/i);
 });
 
 test('Upload and Run in an untrusted workspace are refused and send cockpit nothing', async () => {
@@ -280,4 +282,21 @@ test('a brick another client is writing to is named in the error', async () => {
     await vscode.commands.executeCommand('ev3-c.stop');
     assert.equal(errors().length, 1);
     assert.match(errors()[0].text, /ev3 c run \(terminal\) is writing to the brick/);
+});
+
+test('a notification EVƎ C shows is logged as "Shown" and sent to the daemon\'s log', async () => {
+    const { fake } = installCockpit();
+    activate(context());
+    await settle();
+    fake.calls.length = 0;
+    await vscode.commands.executeCommand('ev3-c.stop');
+    fake.running = true;
+    fake.failures.set('programs/emergencyStop', new FakeCockpitError('timeout'));
+    await vscode.commands.executeCommand('ev3-c.emergencyStop');
+    await settle();
+    const notices = fake.calls.filter(([method]) => method === 'log/notice').map(([, params]) => params);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].level, 'error');
+    assert.match(String(notices[0].text), /did not answer in time/);
+    assert.ok(stub.__state.log.some(l => l.level === 'error' && /^Shown: The brick did not answer in time/.test(l.line)));
 });

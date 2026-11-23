@@ -39,6 +39,21 @@ export interface HostEnvironment {
     /** Where the downloaded compiler is kept. */
     toolchainCacheDir: string;
     core: CoreFunctions;
+    /** Tells EVƎ Cockpit's daemon log a notification EVƎ C showed, when connected. */
+    notice?: (level: NoticeLevel, text: string) => void;
+}
+
+export type NoticeLevel = 'info' | 'warning' | 'error';
+
+/**
+ * Shows a notification and records it, like EVƎ Cockpit does: in EVƎ C's log as "Shown: …"
+ * at its level, and in the cockpit daemon's log, so what a person saw lines up with the logs.
+ */
+export function show(env: HostEnvironment, level: NoticeLevel, text: string): void {
+    env.output[level === 'warning' ? 'warn' : level](`Shown: ${text}`);
+    env.notice?.(level, text);
+    const window = vscode.window;
+    void (level === 'error' ? window.showErrorMessage(text) : level === 'warning' ? window.showWarningMessage(text) : window.showInformationMessage(text));
 }
 
 /** How the brick commands reach the brick the "ev3-c.brick" setting names. */
@@ -61,7 +76,7 @@ export function registerProjectCommands(env: HostEnvironment): vscode.Disposable
                 return;
             }
             const built = await build(env, dir);
-            void vscode.window.showInformationMessage(`EVƎ C built "${built.project.name}".`);
+            show(env, 'info', `EVƎ C built "${built.project.name}".`);
         }),
         register(env, COMMAND_IDS.checkToolchain, async () => {
             const compiler = await vscode.window.withProgress(
@@ -71,7 +86,7 @@ export function registerProjectCommands(env: HostEnvironment): vscode.Disposable
             const where = compiler.origin === 'override' ? 'set in "ev3-c.toolchain.path"'
                 : compiler.origin === 'download' ? `version ${compiler.version ?? '?'}, downloaded now` : `version ${compiler.version ?? '?'}`;
             env.output.info(`Compiler:${compiler.path} (${where})`);
-            void vscode.window.showInformationMessage(`EVƎ C's compiler is ready (${where}).`);
+            show(env, 'info', `EVƎ C's compiler is ready (${where}).`);
         }),
     ];
 }
@@ -102,10 +117,10 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             env.output.show(true);
             if (outcome.kind === 'result') {
                 writeLines(env, formatRunResult(project, outcome.result));
-                void vscode.window.showInformationMessage(`"${project}" run ${outcome.result.run}: ${howItEnded(outcome.result.record)}.`);
+                show(env, 'info', `"${project}" run ${outcome.result.run}: ${howItEnded(outcome.result.record)}.`);
             } else {
                 writeLines(env, formatNoResult(project, outcome.launchId, outcome.startedAt), 'warn');
-                void vscode.window.showWarningMessage(`"${project}" ended, but no result was recorded on the brick.`);
+                show(env, 'warning', `"${project}" ended, but no result was recorded on the brick.`);
             }
         }),
         register(env, COMMAND_IDS.stop, async () => {
@@ -128,7 +143,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
                 () => env.core.listRuns(port, reader, project, bricks.launches),
             );
             if (runs.length === 0) {
-                void vscode.window.showInformationMessage(`"${project}" has no runs on the brick.`);
+                show(env, 'info', `"${project}" has no runs on the brick.`);
                 return;
             }
             const picked = await vscode.window.showQuickPick(
@@ -140,7 +155,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             }
             const result = await env.core.readRunResult(port, reader, project, picked.run, bricks.launches);
             if (result === undefined) {
-                void vscode.window.showInformationMessage(`Run ${picked.run} of "${project}" has no completion record yet.`);
+                show(env, 'info', `Run ${picked.run} of "${project}" has no completion record yet.`);
                 return;
             }
             writeLines(env, formatRunResult(project, result));
@@ -162,10 +177,10 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             env.output[level](`Run folders of "${project}": deleted [${report.deleted.join(', ')}], kept [${report.kept.join(', ')}]`
                 + (report.stillPresent.length > 0 ? `, could not delete [${report.stillPresent.join(', ')}]` : ''));
             if (report.stillPresent.length > 0) {
-                void vscode.window.showWarningMessage(
+                show(env, 'warning', 
                     `Run folders of "${project}": ${parts.join(', ')}; ${report.stillPresent.length} could not be deleted (see the "EVƎ C" output).`);
             } else {
-                void vscode.window.showInformationMessage(`Run folders of "${project}": ${parts.join(', ')}.`);
+                show(env, 'info', `Run folders of "${project}": ${parts.join(', ')}.`);
             }
         }),
     ];
@@ -179,7 +194,7 @@ function register(env: HostEnvironment, id: string, action: () => Promise<void>)
         } catch (error) {
             const code = typeof error === 'object' && error !== null && 'code' in error ? ` [${String((error as { code: unknown }).code)}]` : '';
             env.output.error(`${id} failed${code}: ${error instanceof Error ? error.message : String(error)}`);
-            void vscode.window.showErrorMessage(userMessage(error));
+            show(env, 'error', userMessage(error));
         }
     });
 }
@@ -238,14 +253,14 @@ async function upload(env: HostEnvironment, port: BrickPort, built: Extract<Buil
         () => env.core.deploy(port, built.artifacts),
     );
     env.output.info(`Uploaded [${report.uploaded.map(a => a.brickPath).join(', ')}], unchanged [${report.unchanged.map(a => a.brickPath).join(', ')}]`);
-    void vscode.window.showInformationMessage(
+    show(env, 'info', 
         `EVƎ C uploaded "${built.project.name}": ${report.uploaded.length} file(s) uploaded, ${report.unchanged.length} unchanged.`);
 }
 
 function reportStopped(env: HostEnvironment, what: string, running: boolean): void {
     env.output[running ? 'warn' : 'info'](`${what}: the brick reports ${running ? 'a program still running' : 'no program running'}.`);
     if (running) {
-        void vscode.window.showWarningMessage(`${what} was sent, but the brick still reports a running program.`);
+        show(env, 'warning', `${what} was sent, but the brick still reports a running program.`);
     }
 }
 

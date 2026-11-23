@@ -39,6 +39,10 @@ export function activate(context: vscode.ExtensionContext): void {
         output.info(`Connected to EVƎ Cockpit's daemon ${client.daemon.version ?? ''}`.trimEnd());
         return client;
     });
+    // Notifications EVƎ C shows reach the daemon's log too, under EVƎ C's name.
+    env.notice = (level, text) => {
+        void session.current()?.client.request('log/notice', { level, text }).catch(() => undefined);
+    };
     const bricks: BrickAccess = {
         current: () => session.brick(brickSetting()),
         launches: new Map(),
