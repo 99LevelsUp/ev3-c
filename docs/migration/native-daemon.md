@@ -59,8 +59,10 @@ never sends `daemon/exit`.
 
 `@ev3-cockpit/client` is not on npm yet. `scripts/stage-cockpit-client.cjs` stages it from a
 compiled cockpit checkout (`npm run compile` there) with the cockpit's own `stageClient`, packs it
-into `.cockpit-client/ev3-cockpit-client.tgz`, and `package.json` depends on that tarball.
-Replace the dependency with the published version once it exists.
+into `vendor/ev3-cockpit-client.tgz`, and `package.json` depends on that tarball. The tarball is
+committed (the library is MIT and the cockpit's repository is public), so a fresh clone and CI
+build without the cockpit's sources. Replace the dependency with the published version once it
+exists.
 
 Only `src/cockpit/cockpitLink.ts` imports the library (a unit test guards this), always as `@ev3-cockpit/client`, so the
 renames at the switch (`NativeCockpitClient` → `CockpitClient`, the contract at the top level)

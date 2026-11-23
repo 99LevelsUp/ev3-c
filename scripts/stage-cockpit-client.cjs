@@ -1,7 +1,8 @@
 /**
  * Stages @ev3-cockpit/client from a compiled EVƎ Cockpit checkout and packs it into
- * .cockpit-client/ev3-cockpit-client.tgz, the tarball package.json depends on until the
- * package is published.
+ * vendor/ev3-cockpit-client.tgz, the tarball package.json depends on until the package
+ * is published on npm. The tarball is committed, so a fresh clone and CI build without
+ * the cockpit's sources; .cockpit-client/ holds the staging and is ignored.
  *
  *   node scripts/stage-cockpit-client.cjs [<cockpit checkout>]
  *
@@ -18,6 +19,7 @@ const { pathToFileURL } = require('node:url');
 
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.join(ROOT, '.cockpit-client');
+const VENDOR = path.join(ROOT, 'vendor');
 const TARBALL = 'ev3-cockpit-client.tgz';
 
 /** The cockpit's stageClient: from scripts/package-npm.mts (Node with type stripping), or the older .cjs. */
@@ -52,8 +54,9 @@ async function main() {
         throw new Error(`npm pack failed:\n${packed.stderr}`);
     }
     const [filename] = fs.readdirSync(OUT).filter(name => name.endsWith('.tgz'));
-    fs.renameSync(path.join(OUT, filename), path.join(OUT, TARBALL));
-    console.log(`Staged @ev3-cockpit/client ${root.version} from ${cockpit} into ${path.join(OUT, TARBALL)}. Run npm install to take it.`);
+    fs.mkdirSync(VENDOR, { recursive: true });
+    fs.renameSync(path.join(OUT, filename), path.join(VENDOR, TARBALL));
+    console.log(`Staged @ev3-cockpit/client ${root.version} from ${cockpit} into ${path.join(VENDOR, TARBALL)}. Run npm install to take it, and commit the tarball.`);
 }
 
 main().catch(error => {

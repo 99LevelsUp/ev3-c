@@ -101,7 +101,7 @@
         "watch": "tsc --watch"
     },
     "devDependencies": {
-        "@ev3-cockpit/client": "file:.cockpit-client/ev3-cockpit-client.tgz",
+        "@ev3-cockpit/client": "file:vendor/ev3-cockpit-client.tgz",
         "@types/node": "^20.14.0",
         "@types/vscode": "^1.95.0",
         "@typescript-eslint/eslint-plugin": "^7.16.0",
