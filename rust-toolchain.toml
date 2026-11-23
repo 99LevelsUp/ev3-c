@@ -1,0 +1,7 @@
+# The Rust release every build of ev3-c uses, locally and in CI: one compiler, one set of clippy
+# lints. It is the release EVƎ Cockpit pins (its rust-toolchain.toml); the two projects raise it
+# together, so they never build with different compilers.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
