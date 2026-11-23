@@ -7,7 +7,10 @@
 //! - [`Connection::brick`] resolves the brick setting against the daemon's brick list and the
 //!   bricks the cockpit's VS Code windows show, and holds the brick for EVƎ C
 //!   (`bricks/connect` without `hold`): it stays connected for EVƎ C while the connection lasts.
-//! - Dropping the connection closes it, which ends the hold.
+//! - The connection is the cockpit's [`Cockpit`]: when the daemon is replaced while a command
+//!   runs (an update of the cockpit), it connects again, holds the brick again and renews the
+//!   program subscription before any other request goes out.
+//! - Dropping the connection shuts it down, which ends the hold.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -16,15 +19,16 @@ use std::sync::Arc;
 use ev3_client::contract::{
     BrickParams, BricksConnectParams, ClientKind as ContractKind, ContractBrick,
     ContractChannelState, DeployFile, DeployParams, EmptyParams, FilesReadParams,
-    FilesRemovePathsParams, FilesWriteParams, FsEntryKind, PathParams, ProgramStateChanged,
+    FilesRemovePathsParams, FilesWriteParams, FsEntryKind, Notification, PathParams,
     ProgramsStatusParams, StartOutcome as ContractOutcome,
 };
-use ev3_client::{Client, ClientError, ClientOptions, Launch, Paths, method, user_paths};
+use ev3_client::{
+    ClientError, Cockpit, CockpitEvent, CockpitOptions, Launch, Paths, method, user_paths,
+};
 use ev3c_core::port::{
     BrickEntry, BrickError, BrickEvent, BrickFileReader, BrickPort, DeployItem, EntryKind,
     FileSource, ProgramState, RemoveReport, StartOutcome, StartReport, Subscription,
 };
-use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::cockpit::{
@@ -61,41 +65,43 @@ impl Connector for CockpitConnector {
                 Some(root) => Paths::new(&root, options.channel.as_deref()),
                 None => user_paths(options.channel.as_deref()).map_err(cockpit_error)?,
             };
-            let notice = |text: &str| eprintln!("{text}");
-            let client = Client::connect(ClientOptions {
+            let cockpit = Cockpit::connect(CockpitOptions {
                 name: options.name,
                 kind: match options.kind {
                     ClientKind::Addon => "addon",
                     ClientKind::Mcp => "mcp",
                 },
-                version: &options.version,
-                build_kind: "release",
+                version: options.version,
+                build_kind: "release".to_owned(),
                 daemon: Launch::Installed,
-                paths: &paths,
+                paths,
                 daemon_args,
+                // Without one, every question of the daemon is left unanswered (`keep`).
                 asker: None,
-                notice: &notice,
+                notice: Arc::new(|text: &str| eprintln!("{text}")),
             })
             .await
             .map_err(cockpit_error)?;
-            Ok(CockpitConnection {
-                client: Arc::new(client),
-            })
+            Ok(CockpitConnection { cockpit })
         }
     }
 }
 
-/// One connection to the daemon. Dropping it closes the connection, so the daemon ends what
-/// it held for EVƎ C; the ports of its bricks fail from then on.
+/// One connection to the daemon. Dropping it shuts the connection down, so the daemon ends
+/// what it held for EVƎ C; the ports of its bricks fail from then on.
 pub struct CockpitConnection {
-    client: Arc<Client>,
+    cockpit: Cockpit,
 }
 
 impl Drop for CockpitConnection {
     fn drop(&mut self) {
-        // The client's tasks keep the connection open until it is closed: a dropped client
-        // alone would leave the brick held for as long as the process runs (ev3 c mcp).
-        self.client.endpoint.close();
+        // The cockpit's tasks keep the connection open until it is shut down: a dropped
+        // connection alone would leave the brick held for as long as the process runs
+        // (ev3 c mcp). A command's process ends right after, which closes it anyway.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let cockpit = self.cockpit.clone();
+            runtime.spawn(async move { cockpit.shutdown().await });
+        }
     }
 }
 
@@ -108,7 +114,7 @@ impl Connection for CockpitConnection {
         setting: &str,
     ) -> Result<BrickHandle<CockpitPort, CockpitPort>, CockpitError> {
         let bricks: Vec<BrickInfo> = self
-            .client
+            .cockpit
             .bricks()
             .await
             .map_err(cockpit_error)?
@@ -117,7 +123,7 @@ impl Connection for CockpitConnection {
             .collect();
         // A daemon that cannot say what the windows show counts as showing nothing.
         let shown = match self
-            .client
+            .cockpit
             .call::<method::DaemonStatus>(EmptyParams(serde_json::Map::new()))
             .await
         {
@@ -134,8 +140,10 @@ impl Connection for CockpitConnection {
             Err(_) => Vec::new(),
         };
         let wanted = resolve_brick(setting, &bricks, &shown)?;
+        // Without a hold: the brick is EVƎ C's own on this connection, held again after a
+        // reconnect and let go when the connection ends.
         let brick = self
-            .client
+            .cockpit
             .call::<method::BricksConnect>(BricksConnectParams {
                 brick: Some(wanted),
                 hold: None,
@@ -143,7 +151,7 @@ impl Connection for CockpitConnection {
             .await
             .map_err(cockpit_error)?;
         let port = CockpitPort {
-            client: Arc::clone(&self.client),
+            cockpit: self.cockpit.clone(),
             brick_id: brick.brick_id.clone(),
         };
         Ok(BrickHandle {
@@ -192,7 +200,7 @@ fn brick_error(error: ClientError) -> BrickError {
 /// The operations on one brick, bound to it by id.
 #[derive(Clone)]
 pub struct CockpitPort {
-    client: Arc<Client>,
+    cockpit: Cockpit,
     brick_id: String,
 }
 
@@ -206,13 +214,13 @@ impl BrickFileReader for CockpitPort {
     /// Reads through a private temporary file the daemon writes. An inline read is refused
     /// above 64 KiB, and a run's output may be larger, so every read goes to a local file.
     fn read_file(&self, path: &str) -> impl Future<Output = Result<Vec<u8>, BrickError>> + Send {
-        let client = Arc::clone(&self.client);
+        let cockpit = self.cockpit.clone();
         let brick = self.brick();
         let path = path.to_owned();
         async move {
             let dir = PrivateTempDir::new()?;
             let local = dir.path().join("file");
-            client
+            cockpit
                 .call::<method::FilesRead>(FilesReadParams {
                     brick,
                     inline: None,
@@ -234,7 +242,7 @@ impl BrickFileReader for CockpitPort {
 impl BrickPort for CockpitPort {
     async fn list(&self, path: &str) -> Result<Vec<BrickEntry>, BrickError> {
         let listing = self
-            .client
+            .cockpit
             .call::<method::FilesList>(PathParams {
                 brick: self.brick(),
                 path: path.to_owned(),
@@ -259,7 +267,7 @@ impl BrickPort for CockpitPort {
 
     async fn exists(&self, path: &str) -> Result<bool, BrickError> {
         let answer = self
-            .client
+            .cockpit
             .call::<method::FilesExists>(PathParams {
                 brick: self.brick(),
                 path: path.to_owned(),
@@ -274,7 +282,7 @@ impl BrickPort for CockpitPort {
             Source::Local(local) => (Some(local), None),
             Source::Inline(content) => (None, Some(content)),
         };
-        self.client
+        self.cockpit
             .call::<method::FilesWrite>(FilesWriteParams {
                 brick: self.brick(),
                 content,
@@ -293,7 +301,7 @@ impl BrickPort for CockpitPort {
         recursive: bool,
     ) -> Result<RemoveReport, BrickError> {
         let report = self
-            .client
+            .cockpit
             .call::<method::FilesRemovePaths>(FilesRemovePathsParams {
                 brick: self.brick(),
                 paths: paths.to_vec(),
@@ -327,7 +335,7 @@ impl BrickPort for CockpitPort {
             })
             .collect::<Result<Vec<_>, BrickError>>()?;
         let result = self
-            .client
+            .cockpit
             .call::<method::ProgramsDeployAndRun>(DeployParams {
                 brick: self.brick(),
                 files,
@@ -349,7 +357,7 @@ impl BrickPort for CockpitPort {
 
     async fn stop_program(&self) -> Result<ProgramState, BrickError> {
         let state = self
-            .client
+            .cockpit
             .call::<method::ProgramsStop>(BrickParams {
                 brick: self.brick(),
             })
@@ -360,7 +368,7 @@ impl BrickPort for CockpitPort {
 
     async fn emergency_stop(&self) -> Result<ProgramState, BrickError> {
         let state = self
-            .client
+            .cockpit
             .call::<method::ProgramsEmergencyStop>(BrickParams {
                 brick: self.brick(),
             })
@@ -371,7 +379,7 @@ impl BrickPort for CockpitPort {
 
     async fn program_state(&self) -> Result<ProgramState, BrickError> {
         let state = self
-            .client
+            .cockpit
             .call::<method::ProgramsStatus>(ProgramsStatusParams {
                 brick: self.brick(),
                 wait_ms: None,
@@ -381,34 +389,33 @@ impl BrickPort for CockpitPort {
         Ok(program_state(&state))
     }
 
-    /// Follows the brick's program state with `programs/subscribe`.
-    ///
-    /// Until `ev3-client` subscribes itself (its part B), this follows the daemon's
-    /// notifications directly: they are heard from before the request, so the changes the
-    /// daemon sends before its answer are kept, then picked out by the subscription's id. A
-    /// brick whose link came back (`bricks/reconnected`), or notifications missed because this
-    /// side fell behind, reach the core as [`BrickEvent::Reconnected`]: the state may have
-    /// changed unseen, and the core reads it again. Dropping the [`Subscription`] cancels the
-    /// daemon's subscription.
+    /// Follows the brick's program state with the cockpit's program subscription: every change
+    /// in order, none lost before the daemon's answer, renewed after a reconnect with the
+    /// fresh state first. Besides, [`BrickEvent::Reconnected`] says the state may have changed
+    /// unseen, and the core reads it again: the brick's link came back (`bricks/reconnected`),
+    /// the cockpit connected to a new daemon, or this side fell behind the cockpit's events.
+    /// Dropping the [`Subscription`] cancels the daemon's subscription.
     async fn subscribe(&self) -> Result<Subscription, BrickError> {
-        let mut heard = self.client.endpoint.notifications();
-        let answer = self
-            .client
-            .call::<method::ProgramsSubscribe>(BrickParams {
-                brick: self.brick(),
-            })
+        // Heard from before the subscription is made, so a reconnect meanwhile is not missed.
+        let mut heard = self.cockpit.events();
+        let mut programs = self
+            .cockpit
+            .subscribe_programs(&self.brick_id)
             .await
             .map_err(brick_error)?;
         let (sender, receiver) = mpsc::unbounded_channel();
-        let endpoint = self.client.endpoint.clone();
         let brick_id = self.brick_id.clone();
-        let id = answer.subscription_id;
         tokio::spawn(async move {
             loop {
                 let event = tokio::select! {
                     () = sender.closed() => break,
+                    state = programs.next() => match state {
+                        Some(state) => BrickEvent::Program(program_state(&state)),
+                        // The cockpit was shut down.
+                        None => break,
+                    },
                     heard = heard.recv() => match heard {
-                        Ok((method, params)) => match program_event(&method, &params, &id, &brick_id) {
+                        Ok(event) => match brick_event(&event, &brick_id) {
                             Some(event) => event,
                             None => continue,
                         },
@@ -420,27 +427,21 @@ impl BrickPort for CockpitPort {
                     break;
                 }
             }
-            endpoint.send_and_forget("subscriptions/cancel", json!({ "subscriptionId": id }));
+            // `programs` goes with the task, which cancels the subscription on the daemon.
         });
         Ok(Subscription::new(receiver))
     }
 }
 
-/// The event a daemon notification is for this subscription, if any.
-fn program_event(
-    method: &str,
-    params: &Value,
-    subscription_id: &str,
-    brick_id: &str,
-) -> Option<BrickEvent> {
-    match method {
-        "programs/stateChanged" => {
-            let changed: ProgramStateChanged = serde_json::from_value(params.clone()).ok()?;
-            (changed.subscription_id == subscription_id)
-                .then(|| BrickEvent::Program(program_state(&changed.state)))
+/// What a cockpit event means for a subscription to `brick_id`'s program, if anything.
+fn brick_event(event: &CockpitEvent, brick_id: &str) -> Option<BrickEvent> {
+    match event {
+        CockpitEvent::Notification(Notification::BricksReconnected(brick))
+            if brick.brick_id == brick_id =>
+        {
+            Some(BrickEvent::Reconnected)
         }
-        "bricks/reconnected" => (params.get("brickId").and_then(Value::as_str) == Some(brick_id))
-            .then_some(BrickEvent::Reconnected),
+        CockpitEvent::Reconnected(_) => Some(BrickEvent::Reconnected),
         _ => None,
     }
 }
@@ -557,33 +558,24 @@ mod tests {
     }
 
     #[test]
-    fn a_program_event_is_this_subscriptions_change_or_its_bricks_reconnect() {
-        let changed = json!({
-            "subscriptionId": "s-1",
-            "state": { "brickId": "AAA", "running": true, "runSeq": 9 },
-        });
+    fn only_its_own_bricks_reconnect_or_a_new_daemon_tells_a_subscription_to_read_again() {
+        let back = |brick: &str| {
+            CockpitEvent::Notification(Notification::BricksReconnected(
+                ev3_client::contract::BrickIdPayload {
+                    brick_id: brick.to_owned(),
+                },
+            ))
+        };
         assert_eq!(
-            program_event("programs/stateChanged", &changed, "s-1", "AAA"),
-            Some(BrickEvent::Program(ProgramState {
-                running: true,
-                run_seq: 9
-            }))
-        );
-        assert_eq!(
-            program_event("programs/stateChanged", &changed, "s-2", "AAA"),
-            None,
-            "another subscription's change"
-        );
-        let back = json!({ "brickId": "AAA" });
-        assert_eq!(
-            program_event("bricks/reconnected", &back, "s-1", "AAA"),
+            brick_event(&back("AAA"), "AAA"),
             Some(BrickEvent::Reconnected)
         );
+        assert_eq!(brick_event(&back("BBB"), "AAA"), None, "another brick");
         assert_eq!(
-            program_event("bricks/reconnected", &back, "s-1", "BBB"),
-            None
+            brick_event(&CockpitEvent::Lost(ClientError::unavailable("gone")), "AAA"),
+            None,
+            "a lost daemon tries again with the next request"
         );
-        assert_eq!(program_event("bricks/changed", &back, "s-1", "AAA"), None);
     }
 
     #[test]
