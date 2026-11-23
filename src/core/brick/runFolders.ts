@@ -60,7 +60,8 @@ export async function deleteRuns(port: BrickPort, project: string, options: Dele
         return { deleted: [], kept: [], stillPresent: [] };
     }
     const keepLast = Math.max(0, options.keepLast ?? 0);
-    const kept = new Set(runs.slice(runs.length - keepLast));
+    // More to keep than there are runs keeps them all; a negative start would count from the end.
+    const kept = new Set(runs.slice(Math.max(0, runs.length - keepLast)));
     const running = await runningRun(port, project, runs);
     if (running !== undefined) {
         kept.add(running);

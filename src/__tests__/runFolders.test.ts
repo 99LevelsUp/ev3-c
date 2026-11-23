@@ -96,3 +96,12 @@ test('deleting from a project without runs does nothing', async () => {
     assert.deepEqual(await deleteRuns(port, 'robot'), { deleted: [], kept: [], stillPresent: [] });
     assert.deepEqual(removals(port), []);
 });
+
+test('keeping more runs than there are keeps them all', async () => {
+    const port = brickWithRuns([1, 2, 3]);
+
+    const report = await deleteRuns(port, 'robot', { keepLast: 5 });
+
+    assert.deepEqual(report, { deleted: [], kept: [1, 2, 3], stillPresent: [] });
+    assert.deepEqual(removals(port), []);
+});
