@@ -20,3 +20,5 @@ CMakeLists.txt text eol=lf
 *.rbf binary
 *.elf binary
 *.tgz binary
+*.rs text eol=lf
+*.toml text eol=lf
