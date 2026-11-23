@@ -10,7 +10,8 @@
 //! launch=<id>                      only when EVƎ C started the run
 //! ```
 //!
-//! Only the parsing lives here; reading run folders from a brick comes with the BrickPort.
+//! Only the parsing lives here; reading run folders from a brick is in
+//! [`crate::brick::run_results`].
 
 use std::collections::HashMap;
 use std::fmt;

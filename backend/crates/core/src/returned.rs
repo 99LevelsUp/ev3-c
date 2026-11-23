@@ -3,7 +3,7 @@
 //! project's `returned/run-<n>/` folder. The list comes from the program, so every path is
 //! checked before it names a file on this computer.
 //!
-//! Only the path rules live here; downloading comes with the BrickPort.
+//! Only the path rules live here; downloading is in [`crate::brick::returned_files`].
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};

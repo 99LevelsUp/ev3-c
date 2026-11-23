@@ -3,7 +3,9 @@
 //! files a run returned.
 
 pub mod deploy;
+pub mod returned_files;
 pub mod run_folders;
+pub mod run_results;
 
 #[cfg(test)]
 pub(crate) mod fake;
