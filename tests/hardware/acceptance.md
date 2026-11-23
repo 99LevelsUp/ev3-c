@@ -29,6 +29,7 @@ This procedure proves the run contract on a real brick through EVƎ C's own comm
 | 12 | `ae-loop` | **EV3 C: Run**, then **EV3 C: Upload** while it runs | Upload is refused with a message asking to stop the program first. Then **Stop**. |
 | 13 | `ae-loop` | **EV3 C: Run**; unplug and replug USB while it runs; then **Stop**, then **Run** `ae-quick` | The status bar follows the state again after reconnecting, and the next run gets its result. |
 | 14 | `ae-return` | **EV3 C: Run**, then `ev3 c run` in the project folder | Each run prints "returned two files"; `log.csv` (three lines) and `note.txt` land in the project's `returned/run-<n>/`, and the result lists both brick paths. |
+| 15 | `ae-api` | **EV3 C: Run**; when it asks, press Enter on the brick | Orange LEDs and a short tone; the motor turns one full turn and brakes, turns back for 2 s, then turns 1 s the other way at reversed polarity; flashing green until Enter, then a higher tone and steady green. The output shows 0 degrees after the reset, busy 1 right after the start, about 360 degrees after the turn, a negative speed halfway back, and "Enter pressed". |
 
 ## Results
 
@@ -50,3 +51,4 @@ Brick firmware: ____  EVƎ Cockpit version: ____  EVƎ C commit: ____  Date: ___
 | 12 | | |
 | 13 | | |
 | 14 | | |
+| 15 | | |

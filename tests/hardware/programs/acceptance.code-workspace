@@ -6,6 +6,7 @@
         { "path": "ae-print" },
         { "path": "ae-quick" },
         { "path": "ae-return" },
+        { "path": "ae-api" },
         { "path": "diag-motor" },
         { "path": "../../../templates/hello" }
     ]
