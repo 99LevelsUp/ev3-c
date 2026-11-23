@@ -364,7 +364,14 @@ impl<C: Connector, K: Clock> McpServer<C, K> {
             .unwrap_or(PROTOCOL_VERSIONS[0]);
         json!({
             "protocolVersion": version,
-            "capabilities": { "tools": {} },
+            // The cockpit's own `ev3 mcp` runs this server as a child and passes on its tools
+            // only when it speaks the cockpit's contract (EVƎ Cockpit issue #2).
+            "capabilities": {
+                "tools": {},
+                "experimental": {
+                    "ev3-cockpit": { "contract": ev3_client::CONTRACT_VERSION },
+                },
+            },
             "serverInfo": { "name": "ev3-c", "version": self.deps.version },
         })
     }
@@ -700,6 +707,11 @@ mod tests {
         assert_eq!(
             known["result"]["serverInfo"],
             json!({ "name": "ev3-c", "version": "1.2.3" })
+        );
+        assert_eq!(
+            known["result"]["capabilities"]["experimental"]["ev3-cockpit"]["contract"],
+            json!(ev3_client::CONTRACT_VERSION),
+            "the contract of the cockpit client ev3-c is built with"
         );
         let unknown = s
             .request("initialize", json!({ "protocolVersion": "1999-01-01" }))

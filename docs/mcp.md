@@ -39,3 +39,7 @@ failure is a tool error carrying `{ "error": { "message", "code"? } }` with the 
   connects as kind `mcp`, named after the agent ("Claude Code (EVƎ C MCP)"), so other clients
   see who holds the brick. An agent can never confirm anything on a person's behalf.
 - **Output:** standard output carries MCP messages only, one JSON-RPC message per line.
+- **Contract:** the `initialize` result says which EVƎ Cockpit daemon contract the server speaks,
+  as `capabilities.experimental["ev3-cockpit"].contract`. It is the contract of the cockpit
+  client `ev3-c` is built with, so a host such as the cockpit's own `ev3 mcp` can pass on these
+  tools only when it speaks the same.
