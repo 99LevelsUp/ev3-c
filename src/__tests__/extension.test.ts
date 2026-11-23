@@ -21,12 +21,14 @@ interface StubState {
     workspaceFolders: unknown;
     isTrusted: boolean;
     extensions: Map<string, unknown>;
+    inputBox: string | undefined;
+    saveDialog: string | undefined;
 }
 const stub = vscode as unknown as { __state: StubState; __reset(): void };
 
 const ALL_COMMANDS = [
     'ev3-c.build', 'ev3-c.upload', 'ev3-c.run', 'ev3-c.stop', 'ev3-c.emergencyStop',
-    'ev3-c.showRuns', 'ev3-c.deleteRuns', 'ev3-c.checkToolchain',
+    'ev3-c.showRuns', 'ev3-c.deleteRuns', 'ev3-c.checkToolchain', 'ev3-c.downloadFile',
 ];
 
 function context(): vscode.ExtensionContext {
@@ -299,4 +301,19 @@ test('a notification EVƎ C shows is logged as "Shown" and sent to the daemon\'s
     assert.equal(notices[0].level, 'error');
     assert.match(String(notices[0].text), /did not answer in time/);
     assert.ok(stub.__state.log.some(l => l.level === 'error' && /^Shown: The brick did not answer in time/.test(l.line)));
+});
+
+test('Download File copies a brick file to the path the author picks', async () => {
+    const { fake } = installCockpit();
+    activate(context());
+    await settle();
+    const brickPath = '/home/root/lms2012/prjs/hello/log.csv';
+    fake.files.set(brickPath, Buffer.from('1,2\n'));
+    const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ev3c-download-')), 'log.csv');
+    stub.__state.inputBox = brickPath;
+    stub.__state.saveDialog = target;
+    await vscode.commands.executeCommand('ev3-c.downloadFile');
+    assert.deepEqual(errors(), []);
+    assert.equal(fs.readFileSync(target, 'utf8'), '1,2\n');
+    assert.ok(stub.__state.log.some(l => l.line.includes(`Downloaded ${brickPath} (4 bytes)`)));
 });

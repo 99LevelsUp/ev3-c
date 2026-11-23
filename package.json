@@ -73,6 +73,11 @@
                 "command": "ev3-c.checkToolchain",
                 "title": "Check Toolchain",
                 "category": "EV3 C"
+            },
+            {
+                "command": "ev3-c.downloadFile",
+                "title": "Download File from Brick…",
+                "category": "EV3 C"
             }
         ],
         "configuration": {

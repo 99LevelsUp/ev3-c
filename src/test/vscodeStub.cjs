@@ -39,6 +39,8 @@ function freshState() {
         extensions: new Map(),
         /** Answers for showQuickPick: a function (items) => item, or undefined to dismiss. */
         quickPick: undefined,
+        /** Answer for showSaveDialog: a file path, or undefined to dismiss. */
+        saveDialog: undefined,
         /** Answer for showInputBox. */
         inputBox: undefined,
         /** Picks the item a message resolves to: (text, items) => item; dismissed when unset. */
@@ -64,6 +66,7 @@ const window = {
         return state.quickPick ? state.quickPick(resolved) : undefined;
     },
     showInputBox: async () => state.inputBox,
+    showSaveDialog: async () => (state.saveDialog === undefined ? undefined : { fsPath: state.saveDialog }),
     createOutputChannel: (name) => ({
         name,
         appendLine: (line) => { state.output.push(line); },
@@ -130,6 +133,7 @@ module.exports = {
     commands,
     workspace,
     extensions,
+    Uri: { file: (fsPath) => ({ fsPath }) },
     StatusBarAlignment: { Left: 1, Right: 2 },
     ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
     get __state() {

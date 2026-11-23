@@ -2,12 +2,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
-    BrickFileReader, BrickPort, BuildResult, buildProject, deleteRuns, deploy, emergencyStop, listRuns, loadProjectConfig,
-    PROJECT_FILE, readRunResult, runProject, stopProgram,
+    BrickFileReader, BrickPort, BuildResult, buildProject, deleteRuns, deploy, downloadFile, downloadReturnedFiles, emergencyStop, listRuns,
+    loadProjectConfig, PROJECT_FILE, readRunResult, returnedDir, RunResult, runProject, stopProgram,
 } from '../core';
 import { ensureCompiler } from '../core/toolchain/toolchainManager';
 import { userMessage } from './errorMessages';
-import { formatNoResult, formatRunResult, howItEnded, summaryLabel } from '../shared/resultsView';
+import { formatNoResult, formatReturned, formatRunResult, howItEnded, summaryLabel } from '../shared/resultsView';
 import { toolchainOverride } from './settings';
 
 // The "EV3 C" commands. Build, Upload, and Run each build first, so what goes onto the
@@ -23,11 +23,13 @@ export const COMMAND_IDS = {
     showRuns: 'ev3-c.showRuns',
     deleteRuns: 'ev3-c.deleteRuns',
     checkToolchain: 'ev3-c.checkToolchain',
+    downloadFile: 'ev3-c.downloadFile',
 } as const;
 
 /** The core functions the commands call; tests replace some of them. */
 export const defaultCore = {
     buildProject, deploy, runProject, stopProgram, emergencyStop, listRuns, readRunResult, deleteRuns, loadProjectConfig, ensureCompiler,
+    downloadReturnedFiles, downloadFile,
 };
 export type CoreFunctions = typeof defaultCore;
 
@@ -117,7 +119,8 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
             env.output.show(true);
             if (outcome.kind === 'result') {
                 writeLines(env, formatRunResult(project, outcome.result));
-                show(env, 'info', `"${project}" run ${outcome.result.run}: ${howItEnded(outcome.result.record)}.`);
+                const returned = await returnFiles(env, reader, project, dir, outcome.result);
+                show(env, 'info', `"${project}" run ${outcome.result.run}: ${howItEnded(outcome.result.record)}${returned}.`);
             } else {
                 writeLines(env, formatNoResult(project, outcome.launchId, outcome.startedAt), 'warn');
                 show(env, 'warning', `"${project}" ended, but no result was recorded on the brick.`);
@@ -130,6 +133,30 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
         register(env, COMMAND_IDS.emergencyStop, async () => {
             const state = await env.core.emergencyStop((await bricks.current()).port);
             reportStopped(env, 'Emergency stop', state.running);
+        }),
+        register(env, COMMAND_IDS.downloadFile, async () => {
+            const brickPath = await vscode.window.showInputBox({
+                title: 'Download a file from the brick',
+                prompt: 'The file\'s full path on the brick',
+                placeHolder: '/home/root/lms2012/prjs/<project>/<file>',
+                validateInput: value => (value.trim().startsWith('/') && !value.trim().endsWith('/') ? undefined : 'A full path to a file, starting with /'),
+            });
+            if (brickPath === undefined) {
+                return;
+            }
+            const folder = projectFolderOrNone() ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            const name = path.posix.basename(brickPath.trim());
+            const target = await vscode.window.showSaveDialog({
+                title: `Save ${name} from the brick`,
+                ...(folder !== undefined ? { defaultUri: vscode.Uri.file(path.join(folder, name)) } : {}),
+            });
+            if (target === undefined) {
+                return;
+            }
+            const { reader } = await bricks.current();
+            const bytes = await env.core.downloadFile(reader, brickPath.trim(), target.fsPath);
+            env.output.info(`Downloaded ${brickPath.trim()} (${bytes} bytes) → ${target.fsPath}`);
+            show(env, 'info', `Downloaded ${name} from the brick.`);
         }),
         register(env, COMMAND_IDS.showRuns, async () => {
             const dir = await projectFolder();
@@ -159,6 +186,7 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
                 return;
             }
             writeLines(env, formatRunResult(project, result));
+            await returnFiles(env, reader, project, dir, result);
             env.output.show(true);
         }),
         register(env, COMMAND_IDS.deleteRuns, async () => {
@@ -186,6 +214,22 @@ export function registerBrickCommands(env: HostEnvironment, bricks: BrickAccess)
     ];
 }
 
+/**
+ * Downloads the files a run returned into the project's returned/run-<n> folder and logs
+ * where they went; returns a phrase for the notification, empty when the run returned none.
+ */
+async function returnFiles(env: HostEnvironment, reader: BrickFileReader, project: string, dir: string, result: RunResult): Promise<string> {
+    if (result.returned.length === 0) {
+        return '';
+    }
+    const report = await env.core.downloadReturnedFiles(reader, project, result.returned, returnedDir(dir, result.run));
+    for (const line of formatReturned(report)) {
+        env.output[line.startsWith('Could not') ? 'warn' : 'info'](line);
+    }
+    const failed = report.failed.length > 0 ? `, ${report.failed.length} could not be returned` : '';
+    return `; ${report.downloaded.length} file(s) returned to ${path.relative(dir, returnedDir(dir, result.run))}${failed}`;
+}
+
 /** Registers a command whose failures are logged and shown, never thrown at VS Code. */
 function register(env: HostEnvironment, id: string, action: () => Promise<void>): vscode.Disposable {
     return vscode.commands.registerCommand(id, async () => {
@@ -197,6 +241,12 @@ function register(env: HostEnvironment, id: string, action: () => Promise<void>)
             show(env, 'error', userMessage(error));
         }
     });
+}
+
+/** The single project folder, or undefined when there is none or several. */
+function projectFolderOrNone(): string | undefined {
+    const folders = (vscode.workspace.workspaceFolders ?? []).filter(folder => fs.existsSync(path.join(folder.uri.fsPath, PROJECT_FILE)));
+    return folders.length === 1 ? folders[0].uri.fsPath : undefined;
 }
 
 async function trustedProjectFolder(): Promise<string | undefined> {
