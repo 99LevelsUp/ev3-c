@@ -394,6 +394,8 @@ impl BrickPort for CockpitPort {
     /// fresh state first. Besides, [`BrickEvent::Reconnected`] says the state may have changed
     /// unseen, and the core reads it again: the brick's link came back (`bricks/reconnected`),
     /// the cockpit connected to a new daemon, or this side fell behind the cockpit's events.
+    /// When the daemon went and none could be reached again, the subscription ends: no state
+    /// can come any more, and a run waiting for its end would otherwise wait forever.
     /// Dropping the [`Subscription`] cancels the daemon's subscription.
     async fn subscribe(&self) -> Result<Subscription, BrickError> {
         // Heard from before the subscription is made, so a reconnect meanwhile is not missed.
@@ -415,9 +417,10 @@ impl BrickPort for CockpitPort {
                         None => break,
                     },
                     heard = heard.recv() => match heard {
-                        Ok(event) => match brick_event(&event, &brick_id) {
-                            Some(event) => event,
-                            None => continue,
+                        Ok(event) => match heard_event(&event, &brick_id) {
+                            Heard::Event(event) => event,
+                            Heard::Nothing => continue,
+                            Heard::End => break,
                         },
                         Err(broadcast::error::RecvError::Lagged(_)) => BrickEvent::Reconnected,
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -433,16 +436,25 @@ impl BrickPort for CockpitPort {
     }
 }
 
-/// What a cockpit event means for a subscription to `brick_id`'s program, if anything.
-fn brick_event(event: &CockpitEvent, brick_id: &str) -> Option<BrickEvent> {
+/// What a cockpit event means for a subscription to one brick's program.
+#[derive(Debug, PartialEq, Eq)]
+enum Heard {
+    Event(BrickEvent),
+    Nothing,
+    /// No daemon came back: the subscription ends.
+    End,
+}
+
+fn heard_event(event: &CockpitEvent, brick_id: &str) -> Heard {
     match event {
         CockpitEvent::Notification(Notification::BricksReconnected(brick))
             if brick.brick_id == brick_id =>
         {
-            Some(BrickEvent::Reconnected)
+            Heard::Event(BrickEvent::Reconnected)
         }
-        CockpitEvent::Reconnected(_) => Some(BrickEvent::Reconnected),
-        _ => None,
+        CockpitEvent::Reconnected(_) => Heard::Event(BrickEvent::Reconnected),
+        CockpitEvent::Lost(_) => Heard::End,
+        CockpitEvent::Notification(_) => Heard::Nothing,
     }
 }
 
@@ -558,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn only_its_own_bricks_reconnect_or_a_new_daemon_tells_a_subscription_to_read_again() {
+    fn its_own_bricks_reconnect_says_read_again_and_a_lost_daemon_ends_the_subscription() {
         let back = |brick: &str| {
             CockpitEvent::Notification(Notification::BricksReconnected(
                 ev3_client::contract::BrickIdPayload {
@@ -567,14 +579,18 @@ mod tests {
             ))
         };
         assert_eq!(
-            brick_event(&back("AAA"), "AAA"),
-            Some(BrickEvent::Reconnected)
+            heard_event(&back("AAA"), "AAA"),
+            Heard::Event(BrickEvent::Reconnected)
         );
-        assert_eq!(brick_event(&back("BBB"), "AAA"), None, "another brick");
         assert_eq!(
-            brick_event(&CockpitEvent::Lost(ClientError::unavailable("gone")), "AAA"),
-            None,
-            "a lost daemon tries again with the next request"
+            heard_event(&back("BBB"), "AAA"),
+            Heard::Nothing,
+            "another brick"
+        );
+        assert_eq!(
+            heard_event(&CockpitEvent::Lost(ClientError::unavailable("gone")), "AAA"),
+            Heard::End,
+            "no state can come any more; a run waiting for its end must not wait forever"
         );
     }
 
