@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use ev3_c::args::wants_events;
 use ev3_c::cli::{Client, Deps, EXIT_FAILED, EXIT_USAGE, Interrupts, Io, run_cli};
 use ev3_c::cockpit::Unavailable;
+use ev3_c::mcp::serve_stdio;
 use ev3_c::paths::{PACKAGE_ROOT_VARIABLE, package_root, real_path, toolchain_cache_dir};
 use ev3c_core::port::SystemClock;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -54,6 +55,11 @@ async fn run() -> i32 {
             return EXIT_FAILED;
         }
     };
+
+    if argv == ["mcp"] {
+        // Ctrl+C ends the server as it ends any program; a client cancels a call instead.
+        return serve_stdio(deps).await;
+    }
 
     let (sender, receiver) = mpsc::unbounded_channel();
     if wants_events(&argv) {

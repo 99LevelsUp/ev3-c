@@ -5,6 +5,7 @@ pub mod args;
 pub mod cli;
 pub mod cockpit;
 pub mod format;
+pub mod mcp;
 pub mod paths;
 
 #[cfg(test)]
