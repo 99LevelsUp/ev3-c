@@ -3,6 +3,7 @@
 //! extension.
 
 pub mod launcher;
+pub mod project;
 
 mod json;
 #[cfg(test)]
