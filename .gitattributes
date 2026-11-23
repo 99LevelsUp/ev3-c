@@ -22,3 +22,4 @@ CMakeLists.txt text eol=lf
 *.tgz binary
 *.rs text eol=lf
 *.toml text eol=lf
+Cargo.lock text eol=lf
