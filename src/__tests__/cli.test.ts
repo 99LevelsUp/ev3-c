@@ -253,3 +253,55 @@ test('the install folder is found above the program, where ev3lib\'s headers are
     const root = findPackageRoot(__dirname);
     assert.ok(fs.existsSync(path.join(root, 'ev3lib', 'include', 'ev3.h')));
 });
+
+test('run downloads the files the run returned into returned/run-<n> and reports them', async () => {
+    const downloads: { project: string; paths: readonly string[]; localDir: string }[] = [];
+    const s = setup({
+        runProject: async (): Promise<RunOutcome> => ({
+            kind: 'result',
+            result: { ...result(), returned: ['/home/root/lms2012/prjs/hello/log.csv'] },
+            start: { outcome: 'started', runSeq: 1, uploaded: [], skipped: [] },
+        }),
+        downloadReturnedFiles: async (_reader, project, paths, localDir) => {
+            downloads.push({ project, paths, localDir });
+            return { downloaded: paths.map(brickPath => ({ brickPath, localPath: path.join(localDir, 'log.csv') })), failed: [] };
+        },
+    });
+    assert.equal(await s.cli('run', '--json'), EXIT.ok);
+    assert.equal(downloads.length, 1);
+    assert.equal(downloads[0].localDir, path.join(s.deps.cwd, 'returned', 'run-4'));
+    const printed = JSON.parse(s.out[0]) as { result: { returned: string[] }; returnedFiles: { downloaded: { localPath: string }[] } };
+    assert.deepEqual(printed.result.returned, ['/home/root/lms2012/prjs/hello/log.csv']);
+    assert.equal(printed.returnedFiles.downloaded[0].localPath, path.join(s.deps.cwd, 'returned', 'run-4', 'log.csv'));
+
+    assert.equal(await s.cli('run'), EXIT.ok);
+    assert.match(s.out[1], /Returned files:\n {2}\/home\/root\/lms2012\/prjs\/hello\/log\.csv/);
+    assert.match(s.out[1], /Returned \/home\/root\/lms2012\/prjs\/hello\/log\.csv → /);
+});
+
+test('a run that returned nothing downloads nothing', async () => {
+    let called = false;
+    const s = setup({
+        downloadReturnedFiles: async () => {
+            called = true;
+            return { downloaded: [], failed: [] };
+        },
+    });
+    assert.equal(await s.cli('run'), EXIT.ok);
+    assert.equal(called, false);
+});
+
+test('get downloads one brick file, by default under its own name here', async () => {
+    const s = setup();
+    s.fake.files.set('/home/root/lms2012/prjs/hello/log.csv', Buffer.from('1,2\n'));
+    assert.equal(await s.cli('get', '/home/root/lms2012/prjs/hello/log.csv'), EXIT.ok);
+    assert.equal(fs.readFileSync(path.join(s.deps.cwd, 'log.csv'), 'utf8'), '1,2\n');
+    assert.match(s.out[0], /Downloaded \/home\/root\/lms2012\/prjs\/hello\/log\.csv \(4 bytes\)/);
+
+    assert.equal(await s.cli('get', '/home/root/lms2012/prjs/hello/log.csv', 'copy.csv', '--json'), EXIT.ok);
+    assert.equal(fs.readFileSync(path.join(s.deps.cwd, 'copy.csv'), 'utf8'), '1,2\n');
+    assert.equal((JSON.parse(s.out[1]) as { bytes: number }).bytes, 4);
+
+    assert.equal(await s.cli('get', 'log.csv'), EXIT.usage, 'a brick path is absolute');
+    assert.equal(await s.cli('get'), EXIT.usage);
+});

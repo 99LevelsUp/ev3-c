@@ -2,13 +2,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-    BuildResult, buildProject, deleteRuns, deploy, emergencyStop, listRuns, loadProjectConfig, PROJECT_FILE, readRunResult, RunRecord,
-    RunResult, runProject, stopProgram, brickErrorCode,
+    BrickFileReader, BuildResult, buildProject, deleteRuns, deploy, downloadFile, downloadReturnedFiles, emergencyStop, listRuns,
+    loadProjectConfig, PROJECT_FILE, readRunResult, returnedDir, ReturnedReport, RunRecord, RunResult, runProject, stopProgram,
+    brickErrorCode,
 } from '../core';
 import { ensureCompiler } from '../core/toolchain/toolchainManager';
 import { CockpitClient, ConnectOptions, startFailure } from '../cockpit/cockpitLink';
 import { CockpitSession } from '../shared/cockpitSession';
-import { formatNoResult, formatRunResult, howItEnded } from '../shared/resultsView';
+import { formatNoResult, formatReturned, formatRunResult, howItEnded } from '../shared/resultsView';
 
 // `ev3 c …`: EVƎ C from a terminal or an agent. The cockpit's `ev3` command runs this as
 // the add-on `ev3-c`. It does what the VS Code commands do, through the same core and the
@@ -27,9 +28,12 @@ Commands:
   runs show <n>         print run n's result
   runs delete [--keep <n>]
                         delete the run folders, all or all but the newest n
+  get <brick path> [local path]
+                        download a file from the brick (default: its name, here)
   toolchain             check the compiler, downloading it when needed
 
 The project folder holds ${PROJECT_FILE}; it is the current folder when none is given.
+Files a run returns land in the project's returned/run-<n> folder.
 
 Options:
   --brick <name|id>     the brick (default: EV3C_BRICK, else the brick EVƎ Cockpit's
@@ -62,6 +66,7 @@ export interface CliDeps {
 
 export const cliCore = {
     buildProject, deploy, runProject, stopProgram, emergencyStop, listRuns, readRunResult, deleteRuns, loadProjectConfig, ensureCompiler,
+    downloadReturnedFiles, downloadFile,
 };
 
 class UsageError extends Error {}
@@ -157,6 +162,7 @@ class Cli {
         case 'emergency-stop': return this.stop('emergency-stop', rest);
         case 'runs': return this.runs(rest);
         case 'toolchain': return this.toolchain(rest);
+        case 'get': return this.get(rest);
         default: throw new UsageError(`unknown command "${command}"`);
         }
     }
@@ -239,9 +245,10 @@ class Cli {
                     formatNoResult(project, outcome.launchId, outcome.startedAt, '"ev3 c runs"'));
                 return EXIT.failed;
             }
+            const returned = await this.returnFiles(handle.reader, project, dir, outcome.result);
             this.report(
-                { project, brickId: port.brickId, start: outcome.start, result: resultJson(outcome.result) },
-                formatRunResult(project, outcome.result));
+                { project, brickId: port.brickId, start: outcome.start, result: resultJson(outcome.result), ...returnedJson(returned) },
+                [...formatRunResult(project, outcome.result), ...(returned ? formatReturned(returned) : [])]);
             return runExitCode(outcome.result.record);
         } catch (error) {
             if (error instanceof Interrupted && phase !== 'preparing') {
@@ -279,15 +286,18 @@ class Cli {
                 throw new UsageError('"runs show" needs a run number');
             }
             const run = wholeNumber(n, 'the run number');
-            const project = await this.projectName(this.projectDir(more, 0));
+            const dir = this.projectDir(more, 0);
+            const project = await this.projectName(dir);
             const { port, reader } = await this.session.brick(this.options.brick);
             const result = await this.deps.core.readRunResult(port, reader, project, run, new Map());
             if (result === undefined) {
                 this.report({ project, run, result: null }, [`Run ${run} of "${project}" has no completion record yet.`]);
                 return EXIT.failed;
             }
-            this.report({ project, result: resultJson(result) }, formatRunResult(project, result));
-            return EXIT.ok;
+            const returned = await this.returnFiles(reader, project, dir, result);
+            this.report({ project, result: resultJson(result), ...returnedJson(returned) },
+                [...formatRunResult(project, result), ...(returned ? formatReturned(returned) : [])]);
+            return returned !== undefined && returned.failed.length > 0 ? EXIT.failed : EXIT.ok;
         }
         if (sub === 'delete') {
             const project = await this.projectName(this.projectDir(args, 0));
@@ -307,6 +317,26 @@ class Cli {
             runs.length === 0 ? [`"${project}" has no runs on the brick.`]
                 : runs.map(s => `Run ${s.run}: ${s.record === undefined ? 'no completion record (running, or interrupted)' : howItEnded(s.record)}`));
         return EXIT.ok;
+    }
+
+    private async get(rest: readonly string[]): Promise<number> {
+        const [brickPath, local, ...more] = rest;
+        if (brickPath === undefined || !brickPath.startsWith('/') || brickPath.endsWith('/') || more.length > 0) {
+            throw new UsageError('"get" needs a file\'s full brick path, and takes one local path at most');
+        }
+        const target = path.resolve(this.deps.cwd, local ?? path.posix.basename(brickPath));
+        const { reader } = await this.session.brick(this.options.brick);
+        const bytes = await this.deps.core.downloadFile(reader, brickPath, target);
+        this.report({ brickPath, localPath: target, bytes }, [`Downloaded ${brickPath} (${bytes} bytes) → ${target}`]);
+        return EXIT.ok;
+    }
+
+    /** Downloads the files a run returned into returned/run-<n>; undefined when it returned none. */
+    private async returnFiles(reader: BrickFileReader, project: string, dir: string, result: RunResult): Promise<ReturnedReport | undefined> {
+        if (result.returned.length === 0) {
+            return undefined;
+        }
+        return this.deps.core.downloadReturnedFiles(reader, project, result.returned, returnedDir(dir, result.run));
     }
 
     private async toolchain(rest: readonly string[]): Promise<number> {
@@ -373,7 +403,12 @@ function resultJson(result: RunResult): object {
         ...(result.out !== undefined ? { out: result.out } : {}),
         ...(result.err !== undefined ? { err: result.err } : {}),
         ...(result.startedAt !== undefined ? { startedAt: result.startedAt.toISOString() } : {}),
+        returned: result.returned,
     };
+}
+
+function returnedJson(report: ReturnedReport | undefined): object {
+    return report === undefined ? {} : { returnedFiles: { downloaded: report.downloaded, failed: report.failed } };
 }
 
 function recordJson(record: RunRecord): object {

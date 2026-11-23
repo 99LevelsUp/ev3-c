@@ -31,10 +31,19 @@ ev3 c runs [folder]                  list the project's runs on the brick
 ev3 c runs show <n> [folder]         print run n's result
 ev3 c runs delete [--keep <n>] [folder]
                                      delete the run folders, all or all but the newest n
+ev3 c get <brick path> [local path]  download a file from the brick (default: its name, here)
 ev3 c toolchain                      check the compiler, downloading it when needed
 ```
 
 The folder holds the project's `ev3c.json`; without one, the current folder is used.
+
+## Files a program returns
+
+A program marks files for return with ev3lib's `ev3_return_fopen()` or `ev3_return_file()`.
+`ev3 c run` and `ev3 c runs show` download them into the project's `returned/run-<n>/` folder: a
+file inside the brick's project folder at its path there, any other below `brick/` at its whole
+brick path. With `--json`, `result.returned` lists the brick paths and `returnedFiles` says where
+each one went, or why it could not be returned.
 
 | Option | Meaning |
 |---|---|
