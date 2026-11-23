@@ -2,6 +2,7 @@
 //! without a front end. The `ev3-c` program serves it to a terminal, an agent and the VS Code
 //! extension.
 
+pub mod build;
 pub mod launcher;
 pub mod project;
 pub mod toolchain;
