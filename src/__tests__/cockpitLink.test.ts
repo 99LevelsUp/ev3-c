@@ -99,6 +99,14 @@ test('"active" is the brick the cockpit\'s window shows, even with several conne
     });
 });
 
+test('a window that still names a disconnected brick does not count', () => {
+    const fake = new FakeCockpitClient();
+    fake.brickList.push(fakeBrick('bt-001653000bbb', 'BBB', false));
+    const client = fake.asClient();
+    assert.equal(resolveBrick(client, 'active', ['bt-001653000bbb']), BRICK_ID, 'falls back to the only connected brick');
+    assert.equal(resolveBrick(client, 'active', [BRICK_ID, 'bt-001653000bbb']), BRICK_ID, 'no ambiguity with a disconnected one');
+});
+
 test('the shown bricks follow daemon/status, then daemon/showsChanged, counting only cockpit windows', async () => {
     const fake = new FakeCockpitClient();
     fake.clientStatuses = [

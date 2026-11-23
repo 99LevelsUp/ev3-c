@@ -133,11 +133,13 @@ export function resolveBrick(client: CockpitClient, setting: string, shown: read
     if (setting !== 'active') {
         return client.brick(setting)?.brickId ?? setting;
     }
-    if (shown.length === 1) {
-        return shown[0];
+    // A window may still name a brick it disconnected; only a connected one counts.
+    const live = shown.filter(id => client.bricks().some(b => b.brickId === id && b.connected));
+    if (live.length === 1) {
+        return live[0];
     }
-    if (shown.length > 1) {
-        const names = shown.map(id => client.brick(id)?.name ?? id);
+    if (live.length > 1) {
+        const names = live.map(id => client.brick(id)?.name ?? id);
         throw new CockpitLinkError(
             `EVƎ Cockpit's windows show different bricks (${names.join(', ')}); set "ev3-c.brick" to the one EVƎ C should use.`,
             'brick_ambiguous');
