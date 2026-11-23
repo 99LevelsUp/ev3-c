@@ -6,8 +6,9 @@
  *
  *   node scripts/check-rust-versions.cjs [<cockpit Cargo.lock>]
  *
- * Without an argument it reads the cockpit's daemon/Cargo.lock at the revision in
- * backend/cockpit.rev from GitHub. A crate only one project uses is not compared.
+ * Without an argument it reads, from GitHub, the cockpit's daemon/Cargo.lock at the commit
+ * ev3-c pins the cockpit's crates (ev3-client) to. A crate only one project uses is not
+ * compared, nor are the cockpit's own crates, which its lock lists without a source.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -31,14 +32,21 @@ function versions(lock) {
     return map;
 }
 
+/** The one cockpit commit ev3-c's crates from the cockpit's repository are pinned to. */
+function pinnedRev(lock) {
+    const pattern = new RegExp(`^source = "git\\+https://github\\.com/${REPO.replace('/', '\\/')}\\?rev=([0-9a-f]{40})#`, 'gm');
+    const revs = new Set([...lock.matchAll(pattern)].map(match => match[1]));
+    if (revs.size !== 1) {
+        throw new Error(`backend/Cargo.lock must pin EVƎ Cockpit's crates to one full commit hash (rev = "<40 hex>"), not ${revs.size === 0 ? 'none' : [...revs].join(', ')}.`);
+    }
+    return [...revs][0];
+}
+
 async function cockpitLock(given) {
     if (given !== undefined) {
         return fs.readFileSync(given, 'utf8');
     }
-    const rev = fs.readFileSync(path.join(ROOT, 'backend', 'cockpit.rev'), 'utf8').trim();
-    if (!/^[0-9a-f]{40}$/.test(rev)) {
-        throw new Error(`backend/cockpit.rev must hold one full commit hash, not "${rev}".`);
-    }
+    const rev = pinnedRev(fs.readFileSync(path.join(ROOT, 'backend', 'Cargo.lock'), 'utf8'));
     const url = `https://raw.githubusercontent.com/${REPO}/${rev}/daemon/Cargo.lock`;
     const response = await fetch(url);
     if (!response.ok) {

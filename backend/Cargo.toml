@@ -22,3 +22,16 @@ strip = "symbols"
 
 [profile.dev]
 debug = "line-tables-only"
+
+# ev3-client takes the SHA-256 of the cockpit daemon's binary when it starts one. Unoptimised,
+# that took about 30 s on an old Linux laptop, past the 15 s a client waits for a daemon, and
+# on ev3-c mcp's one thread it would hold up every other call; EVƎ Cockpit optimises the same
+# crates.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
