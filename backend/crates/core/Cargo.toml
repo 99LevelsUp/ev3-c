@@ -1,0 +1,17 @@
+[package]
+name = "ev3c-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# EVƎ C's core: projects, the compiler, the launcher, and the operations on a brick behind the
+# BrickPort trait. It knows no front end and no transport; `ev3-c` puts it to work.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true
