@@ -79,3 +79,7 @@ npm run test:native     # C tests, on Linux or macOS
 
 The backend is moving to Rust (`backend/`, a Cargo workspace); see
 [issue #13](https://github.com/99LevelsUp/ev3-c/issues/13).
+
+## License
+
+[MIT](LICENSE), like EVƎ Cockpit.

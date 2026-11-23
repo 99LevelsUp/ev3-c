@@ -4,6 +4,7 @@
     "description": "Write, build, and run C programs on LEGO EV3 bricks with the original firmware",
     "version": "0.0.1",
     "publisher": "99LevelsUp",
+    "license": "MIT",
     "repository": {
         "type": "git",
         "url": "https://github.com/99LevelsUp/ev3-c"
