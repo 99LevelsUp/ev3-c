@@ -8,13 +8,27 @@ publish.workspace = true
 # The `ev3-c` program: what EVƎ Cockpit's `ev3 c …` starts, what `ev3 c mcp` serves to an
 # agent, and what EVƎ C's VS Code extension runs for each command.
 
+[lib]
+name = "ev3_c"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ev3-c"
 path = "src/main.rs"
 
 [dependencies]
 ev3c-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# One thread is enough for one command or one MCP client: `rt` with a LocalSet runs the MCP
+# requests side by side, `signal` hears Ctrl+C, `io-std`/`io-util` read standard input for
+# MCP messages and --events interrupts. The arguments are parsed by hand, as the TypeScript
+# backend did with node:util, so no argument crate is needed.
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "sync", "signal", "io-std", "io-util"] }
+
+[dev-dependencies]
+ev3c-core = { path = "../core", features = ["test-support"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "sync", "test-util"] }
 
 [lints]
 workspace = true
