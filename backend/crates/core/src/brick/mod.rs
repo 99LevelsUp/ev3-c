@@ -4,6 +4,7 @@
 
 pub mod deploy;
 pub mod returned_files;
+pub mod run_control;
 pub mod run_folders;
 pub mod run_results;
 

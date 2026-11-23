@@ -1,7 +1,6 @@
 //! Downloads the files a run returned into the project's `returned/run-<n>/` folder. The
 //! paths come from the program, so each one goes through
-//! [`local_path_for`](crate::returned::local_path_for) before it names a file on this
-//! computer.
+//! [`local_path_for`] before it names a file on this computer.
 
 use std::fmt;
 use std::io;

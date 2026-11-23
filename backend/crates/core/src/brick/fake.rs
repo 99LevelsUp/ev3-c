@@ -9,7 +9,7 @@
 //! waits, straight to the next timer, so a 10 s wait takes no real time.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
@@ -119,6 +119,35 @@ impl FakeBrick {
         }
     }
 
+    pub fn emit(&mut self, event: BrickEvent) {
+        self.listeners
+            .retain(|listener| listener.send(event).is_ok());
+    }
+
+    /// Tells the subscribers the program state now.
+    pub fn emit_state(&mut self) {
+        self.emit(BrickEvent::Program(self.state()));
+    }
+
+    /// The program stops and the subscribers hear it.
+    pub fn stop(&mut self) {
+        self.running = false;
+        self.emit_state();
+    }
+
+    /// Subscriptions still held by someone.
+    pub fn listener_count(&self) -> usize {
+        self.listeners
+            .iter()
+            .filter(|listener| !listener.is_closed())
+            .count()
+    }
+
+    /// Ends every subscription from the port's side, as a client shutting down would.
+    pub fn end_subscriptions(&mut self) {
+        self.listeners.clear();
+    }
+
     fn write(&mut self, path: &str, source: &FileSource) -> Result<(), BrickError> {
         if let Some(code) = self
             .write_failures
@@ -172,6 +201,17 @@ impl FakeBrickPort {
         self.with(|brick| brick.calls.clone())
     }
 
+    /// The clock whose time `read_times` holds.
+    pub fn clock(&self) -> TestClock {
+        self.with(|brick| brick.clock)
+    }
+
+    /// A handle for hooks, which get the brick's state but not the port, to change the
+    /// brick later. It does not keep the brick alive, so a hook holding it is no cycle.
+    pub fn handle(&self) -> FakeHandle {
+        FakeHandle(Arc::downgrade(&self.brick))
+    }
+
     fn call<T>(
         &self,
         method: &str,
@@ -189,6 +229,25 @@ impl FakeBrickPort {
             }
             body(brick)
         })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FakeHandle(Weak<Mutex<FakeBrick>>);
+
+impl FakeHandle {
+    /// Runs `action` on the brick once `delay` has passed. With no delay it runs as soon as
+    /// the task that scheduled it waits, like `setImmediate`.
+    pub fn later(&self, delay: Duration, action: impl FnOnce(&mut FakeBrick) + Send + 'static) {
+        let brick = self.0.clone();
+        tokio::spawn(async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            if let Some(brick) = brick.upgrade() {
+                action(&mut brick.lock().unwrap());
+            }
+        });
     }
 }
 
