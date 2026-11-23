@@ -9,12 +9,23 @@ publish.workspace = true
 # BrickPort trait. It knows no front end and no transport; `ev3-c` puts it to work.
 
 [dependencies]
+# Cockpit lists a brick file's MD5; an upload is skipped when it matches. Same RustCrypto
+# family as sha2, so it adds no other crate.
+md-5 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# Brick operations are async, like cockpit's client: timers for the waits, a channel for the
+# brick's state events, and select! to hear those events while waiting. The caller brings
+# the runtime.
+tokio = { version = "1", default-features = false, features = ["time", "sync", "macros"] }
 # Downloads the pinned compiler. rustls with ring and bundled web roots: no native TLS, and
 # nothing to build beyond a C compiler.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+# A runtime for the tests, with paused time so the waits of a run take no real time.
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "time", "sync"] }
 
 [lints]
 workspace = true
