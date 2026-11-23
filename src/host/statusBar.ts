@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Subscription } from '../core';
 import { isBrickOnline } from '../cockpit/cockpitLink';
-import { CockpitSession, Connected, resolveSetting } from './cockpitSession';
+import { CockpitSession, Connected, resolveSetting } from '../shared/cockpitSession';
 import { COMMAND_IDS } from './commands';
 import { brickSetting } from './settings';
 

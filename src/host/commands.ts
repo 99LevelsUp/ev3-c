@@ -7,7 +7,7 @@ import {
 } from '../core';
 import { ensureCompiler } from '../core/toolchain/toolchainManager';
 import { userMessage } from './errorMessages';
-import { formatNoResult, formatRunResult, howItEnded, summaryLabel } from './resultsView';
+import { formatNoResult, formatRunResult, howItEnded, summaryLabel } from '../shared/resultsView';
 import { toolchainOverride } from './settings';
 
 // The "EV3 C" commands. Build, Upload, and Run each build first, so what goes onto the

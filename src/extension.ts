@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { connectCockpit, CockpitClient } from './cockpit/cockpitLink';
 import { BrickAccess, defaultCore, HostEnvironment, registerBrickCommands, registerProjectCommands } from './host/commands';
-import { CockpitSession } from './host/cockpitSession';
+import { CockpitSession } from './shared/cockpitSession';
 import { askPerson } from './host/questions';
 import { brickSetting, SETTING_BRICK } from './host/settings';
 import { ProgramStatusBar } from './host/statusBar';

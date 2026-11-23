@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { formatNoResult, formatRunResult, howItEnded } from '../host/resultsView';
+import { formatNoResult, formatRunResult, howItEnded } from '../shared/resultsView';
 
 test('a run result shows how it ended, the PC start time, both outputs, and truncation', () => {
     const startedAt = new Date(2026, 10, 18, 10, 38, 5);

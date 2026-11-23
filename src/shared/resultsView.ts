@@ -1,6 +1,7 @@
 import { RunRecord, RunResult, RunSummary } from '../core';
 
-// Turns run results into the lines the "EVƎ C" output channel shows.
+// Turns run results into lines of text, for the "EVƎ C" output channel and the `ev3 c`
+// command alike. Nothing here imports VS Code.
 
 /** How a run ended, in one phrase. */
 export function howItEnded(record: RunRecord): string {
@@ -38,10 +39,11 @@ export function formatRunResult(project: string, result: RunResult): string[] {
     ];
 }
 
-export function formatNoResult(project: string, launchId: string, startedAt: Date): string[] {
+/** `listLater` names what lists the run later in the author's tool: a command or a CLI call. */
+export function formatNoResult(project: string, launchId: string, startedAt: Date, listLater = '"EV3 C: Show Runs"'): string[] {
     return [
         `--- ${project}, run started ${startedText(startedAt)} ---`,
-        `No result was recorded on the brick (launch ${launchId}). "EV3 C: Show Runs" lists the run if its record appears later.`,
+        `No result was recorded on the brick (launch ${launchId}). ${listLater} lists the run if its record appears later.`,
     ];
 }
 

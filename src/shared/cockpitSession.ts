@@ -1,7 +1,8 @@
 import { BrickFileReader } from '../core';
 import { CockpitClient, CockpitPort, createBrickPort, isBrickOnline, resolveBrick, ShownBricks } from '../cockpit/cockpitLink';
 
-// The host's connection to EVƎ Cockpit's daemon. It connects on first use, not at
+// A frontend's connection to EVƎ Cockpit's daemon, for the VS Code extension and the
+// `ev3 c` command alike; nothing here imports VS Code. It connects on first use, not at
 // activation, so a daemon that is not ready yet (the cockpit records how to start it when
 // it starts itself) costs one failed command, not every brick command until a reload.
 
