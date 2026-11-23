@@ -23,4 +23,8 @@ export type { RunOutcome, RunProjectOptions } from './brick/runControl';
 export { listRuns, parseRunRecord, readRunRecord, readRunResult, resultFromRecord, RunRecordError } from './brick/runResults';
 export type { RunEnd, RunRecord, RunResult, RunSummary } from './brick/runResults';
 export { brickProjectDir, deleteRuns, listRunNumbers, runDir, runsDir } from './brick/runFolders';
+export {
+    downloadFile, downloadReturnedFiles, localPathFor, parseReturnList, RETURN_LIST_FILE, RETURNED_DIR, returnedDir,
+} from './brick/returnedFiles';
+export type { ReturnedFile, ReturnedReport } from './brick/returnedFiles';
 export type { DeleteRunsOptions, DeleteRunsReport } from './brick/runFolders';

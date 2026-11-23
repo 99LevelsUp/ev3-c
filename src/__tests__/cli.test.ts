@@ -37,6 +37,7 @@ function result(record: Partial<RunResult['record']> = {}, out = 'hello\n'): Run
         out,
         err: '',
         startedAt: new Date('2026-11-23T10:00:00Z'),
+        returned: [],
     };
 }
 

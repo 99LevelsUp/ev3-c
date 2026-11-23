@@ -1,4 +1,4 @@
-import { RunRecord, RunResult, RunSummary } from '../core';
+import { ReturnedReport, RunRecord, RunResult, RunSummary } from '../core';
 
 // Turns run results into lines of text, for the "EVƎ C" output channel and the `ev3 c`
 // command alike. Nothing here imports VS Code.
@@ -36,6 +36,15 @@ export function formatRunResult(project: string, result: RunResult): string[] {
         `Ended: ${howItEnded(record)}`,
         ...stream('Output (stdout)', result.out, record.outTruncated),
         ...stream('Errors (stderr)', result.err, record.errTruncated),
+        ...(result.returned.length === 0 ? [] : ['Returned files:', ...result.returned.map(brickPath => `  ${brickPath}`)]),
+    ];
+}
+
+/** What became of a run's returned files on this computer. */
+export function formatReturned(report: ReturnedReport): string[] {
+    return [
+        ...report.downloaded.map(file => `Returned ${file.brickPath} → ${file.localPath}`),
+        ...report.failed.map(file => `Could not return ${file.brickPath}: ${file.reason}`),
     ];
 }
 

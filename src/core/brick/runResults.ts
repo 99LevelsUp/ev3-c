@@ -1,4 +1,5 @@
 import { BrickFileReader, BrickPort } from '../brickPort';
+import { parseReturnList, RETURN_LIST_FILE } from './returnedFiles';
 import { listRunNumbers, RESULT_FILE, runDir } from './runFolders';
 
 // How a run ended, read from its run folder. The completion record `res` is `key=value`
@@ -33,6 +34,8 @@ export interface RunResult {
     readonly err?: string;
     /** When EVƎ C started the run, by the PC's clock; absent for a run EVƎ C did not start. */
     readonly startedAt?: Date;
+    /** Brick paths of the files the run marked for return, in the order marked; empty when none. */
+    readonly returned: readonly string[];
 }
 
 export interface RunSummary {
@@ -105,8 +108,9 @@ export async function readRunResult(
 }
 
 /**
- * Completes a run's result from its already-read record by reading both outputs. An
- * output that is missing (per `present`, when given) or cannot be read is left out.
+ * Completes a run's result from its already-read record by reading both outputs and the
+ * return list. A file that is missing (per `present`, when given) or cannot be read is
+ * left out; a missing return list means the run marked no file.
  */
 export async function resultFromRecord(
     reader: BrickFileReader,
@@ -129,7 +133,8 @@ export async function resultFromRecord(
     };
     const out = await readOutput(OUT_FILE);
     const err = await readOutput(ERR_FILE);
-    return { run, record, out, err, startedAt: startTime(record, launches) };
+    const list = await readOutput(RETURN_LIST_FILE);
+    return { run, record, out, err, startedAt: startTime(record, launches), returned: list === undefined ? [] : parseReturnList(list) };
 }
 
 /**
