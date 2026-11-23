@@ -326,24 +326,65 @@ fn extract(archive: &Path, into: &Path) -> Result<(), ToolchainError> {
     Ok(())
 }
 
+/// The curl that downloads the archive. Windows 10 and later ship it in System32; elsewhere it is
+/// the one on PATH. The download goes through the system's curl, as the extraction goes through
+/// its tar, so ev3-c links no TLS stack of its own and shares its library versions with EVƎ
+/// Cockpit, which downloads nothing over HTTPS.
+pub(crate) fn system_curl() -> PathBuf {
+    if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
+        Path::new(&root).join("System32").join("curl.exe")
+    } else {
+        PathBuf::from("curl")
+    }
+}
+
 fn fetch_to_file(url: &str, destination: &Path) -> Result<(), ToolchainError> {
-    let failed =
-        |detail: String| ToolchainError::Download(format!("Downloading {url} failed: {detail}"));
-    let response = ureq::get(url).call().map_err(|error| match error {
-        ureq::Error::StatusCode(status) => failed(format!("HTTP {status}.")),
-        other => failed(format!("{other}.")),
-    })?;
-    // The archive is far larger than ureq's in-memory body limit, so it is streamed.
-    let mut reader = response.into_body().into_reader();
-    let mut file = fs::File::create(destination).map_err(io_error(format!(
-        "Creating {} failed",
-        destination.display()
-    )))?;
-    if let Err(error) = io::copy(&mut reader, &mut file) {
-        drop(file);
+    fetch_with(&system_curl(), url, destination)
+}
+
+fn fetch_with(curl: &Path, url: &str, destination: &Path) -> Result<(), ToolchainError> {
+    let mut command = Command::new(curl);
+    // --fail turns an HTTP error into a failure instead of saving the error page.
+    command
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--retry",
+            "2",
+        ])
+        .arg("--output")
+        .arg(destination)
+        .arg(url);
+    super::hide_window(&mut command);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(ToolchainError::Download(format!(
+                "Downloading {url} needs curl, which was not found ({}). Install curl, or use a \
+                 compiler of your own: --toolchain or EV3C_TOOLCHAIN for ev3 c, the \
+                 \"ev3-c.toolchain.path\" setting in VS Code.",
+                curl.display()
+            )));
+        }
+        Err(error) => {
+            return Err(ToolchainError::Download(format!(
+                "Downloading {url} failed: starting {} failed: {error}.",
+                curl.display()
+            )));
+        }
+    };
+    if !output.status.success() {
         // A part of the archive is not worth keeping; its checksum would not match anyway.
         let _ = fs::remove_file(destination);
-        return Err(failed(format!("{error}.")));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ToolchainError::Download(format!(
+            "Downloading {url} failed: curl exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -573,6 +614,43 @@ mod tests {
             .to_string();
 
         assert_eq!(message, "network must not be used");
+    }
+
+    #[test]
+    fn a_missing_curl_says_how_to_go_on() {
+        let dir = temp_dir("ev3c-curl-");
+        let message = fetch_with(
+            &dir.join("no-curl-here"),
+            "https://example.invalid/zig.zip",
+            &dir.join("zig.zip"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            message.contains("needs curl, which was not found"),
+            "{message}"
+        );
+        assert!(
+            message.contains("--toolchain or EV3C_TOOLCHAIN"),
+            "{message}"
+        );
+        assert!(message.contains("\"ev3-c.toolchain.path\""), "{message}");
+        assert!(!dir.join("zig.zip").exists());
+    }
+
+    #[test]
+    fn curl_comes_from_system32_on_windows_and_from_path_elsewhere() {
+        let curl = system_curl();
+        if cfg!(windows) {
+            assert!(
+                curl.ends_with(Path::new("System32").join("curl.exe")),
+                "{}",
+                curl.display()
+            );
+        } else {
+            assert_eq!(curl, PathBuf::from("curl"));
+        }
     }
 
     #[test]

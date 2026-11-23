@@ -80,3 +80,8 @@ jobs:
 
             - name: Tests
               run: cargo test
+
+            - name: Same crate versions as EVƎ Cockpit
+              if: matrix.os == 'ubuntu-latest'
+              working-directory: .
+              run: node scripts/check-rust-versions.cjs
