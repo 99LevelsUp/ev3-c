@@ -195,7 +195,7 @@ static int play(const char *scenario)
         return 0;
     }
     if (strcmp(scenario, "env") == 0) {
-        char text[4096], fds[256] = "";
+        char text[4096], fds[256] = "", cwd[PATH_MAX] = "";
         DIR *d = opendir("/proc/self/fd");
         struct dirent *e;
         while (d != NULL && (e = readdir(d)) != NULL) {
@@ -207,8 +207,11 @@ static int play(const char *scenario)
         if (d != NULL) {
             closedir(d);
         }
-        snprintf(text, sizeof text, "project=%s\nrun=%s\nfds=%s\nown_group=%d\n",
-                 getenv("EV3C_PROJECT_DIR"), getenv("EV3C_RUN_DIR"), fds, getpgid(0) == getpid());
+        if (getcwd(cwd, sizeof cwd) == NULL) {
+            strcpy(cwd, "?");
+        }
+        snprintf(text, sizeof text, "project=%s\nrun=%s\nfds=%s\nown_group=%d\ncwd=%s\n",
+                 getenv("EV3C_PROJECT_DIR"), getenv("EV3C_RUN_DIR"), fds, getpgid(0) == getpid(), cwd);
         mark("env", text);
         return 0;
     }
@@ -503,7 +506,8 @@ static void test_sigkill(void)
 }
 
 /* Started from the brick menu: relative folder with a trailing '/'. The
-   program sees absolute folders, only 0-2 open, and its own process group. */
+   program sees absolute folders, only 0-2 open, its own process group, and its project
+   folder as the current folder. */
 static void test_program_environment(void)
 {
     brick b;
@@ -520,6 +524,8 @@ static void test_program_environment(void)
     CHECK(has_line(text, expected), "program environment:\n%s", text);
     CHECK(has_line(text, "fds=0,1,2"), "the program should inherit only 0, 1 and 2:\n%s", text);
     CHECK(has_line(text, "own_group=1"), "the program should lead its own process group:\n%s", text);
+    snprintf(expected, sizeof expected, "cwd=%s", project);
+    CHECK(has_line(text, expected), "the program should start in its project folder:\n%s", text);
 }
 
 static void test_slot_end_with_sigterm_ignored(void)

@@ -97,7 +97,8 @@ int ev3_button_back_pressed(void);
  * run marks into the author's workspace after the run ends. Marking writes
  * the file's full path to the run folder's list at once, so the list
  * survives a crash; what the file holds is read when the run has ended.
- * A relative path is taken from the current folder. Paths may not contain
+ * A relative path is taken from the current folder, which is the project
+ * folder when EVƎ C's supervisor starts the program. Paths may not contain
  * a line break.
  */
 

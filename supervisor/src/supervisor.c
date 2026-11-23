@@ -31,7 +31,8 @@
  *   6. If the slot has already ended, record that and start nothing.
  *      Otherwise start <folder>/prog with argv[0] "prog" in its own process
  *      group, stdout and stderr captured into out and err up to the cap, and
- *      EV3C_PROJECT_DIR and EV3C_RUN_DIR set to the two absolute folders.
+ *      EV3C_PROJECT_DIR and EV3C_RUN_DIR set to the two absolute folders, and
+ *      the project folder as its current folder.
  *   7. Every 100 ms check the program and the slot token.
  *        - The program ended: SIGKILL its whole group, so a helper process it
  *          forked cannot keep driving motors after the run.
@@ -227,7 +228,7 @@ static void pump(stream *s)
 
 /* --- the program ------------------------------------------------------------ */
 
-static void exec_program(const char *program, int out, int err)
+static void exec_program(const char *program, const char *project, int out, int err)
 {
     struct sigaction action;
     sigset_t none;
@@ -245,6 +246,11 @@ static void exec_program(const char *program, int out, int err)
     dup2(out, 1);
     dup2(err, 2);
     close_from(3);
+    /* Relative paths in the program, files it returns included, start from its project
+       folder, not from wherever the VM runs. The folder exists: prog lies in it. */
+    if (chdir(project) != 0) {
+        _exit(127);
+    }
     execv(program, argv);
     _exit(127);
 }
@@ -302,7 +308,7 @@ static void run_program(const char *project, const char *run_dir, long long cap,
 
     child = fork();
     if (child == 0) {
-        exec_program(program, out_pipe[1], err_pipe[1]);
+        exec_program(program, project, out_pipe[1], err_pipe[1]);
     }
     close(out_pipe[1]);
     close(err_pipe[1]);
