@@ -46,6 +46,9 @@ const NOT_STARTED_CODES: [&str; 9] = [
 /// Makes a launch ID.
 pub type NewLaunchId = dyn Fn() -> String + Sync;
 
+/// Hears that the start succeeded, while the run goes on.
+pub type OnStarted<'a> = dyn Fn(&StartReport) + Sync + 'a;
+
 pub struct RunProjectOptions<'a> {
     /// Project name; the launcher is `<project>/<project>.rbf` in the brick's projects
     /// folder.
@@ -57,6 +60,9 @@ pub struct RunProjectOptions<'a> {
     pub launches: &'a Launches,
     /// Makes the launch ID; a fresh random one when `None`.
     pub new_launch_id: Option<&'a NewLaunchId>,
+    /// Called once the start returned successfully, before the wait for the run's end, so a
+    /// front end can show that the program runs.
+    pub on_started: Option<&'a OnStarted<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +99,7 @@ pub async fn run_project(
         artifacts,
         launches,
         new_launch_id,
+        on_started,
     } = options;
     let dir = brick_project_dir(project);
     let request_path = format!("{dir}/{REQUEST_FILE}");
@@ -147,6 +154,9 @@ pub async fn run_project(
             return Err(error);
         }
     };
+    if let Some(on_started) = on_started {
+        on_started(&start);
+    }
     wait.started(&start);
     wait.until_slot_stopped(port).await?;
 
@@ -455,6 +465,7 @@ mod tests {
                     artifacts: &self.artifacts,
                     launches: &self.launches,
                     new_launch_id: None,
+                    on_started: None,
                 },
             );
             // Paused time jumps over the hour at once, so a run that never ends fails the
@@ -940,6 +951,8 @@ mod tests {
             handle.later(Duration::ZERO, FakeBrick::stop);
         });
         let make = || "fixed-id".to_owned();
+        let heard = Mutex::new(Vec::new());
+        let on_started = |start: &StartReport| heard.lock().unwrap().push(start.clone());
 
         let outcome = run_project(
             &setup.port,
@@ -950,13 +963,42 @@ mod tests {
                 artifacts: &setup.artifacts,
                 launches: &setup.launches,
                 new_launch_id: Some(&make),
+                on_started: Some(&on_started),
             },
         )
         .await;
 
-        let (result, _) = result(outcome.unwrap());
+        let (result, start) = result(outcome.unwrap());
         assert_eq!(result.record.launch.as_deref(), Some("fixed-id"));
         assert!(setup.launches.get("fixed-id").is_some());
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [start],
+            "the start is told once, as returned"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_start_is_not_told_as_started() {
+        let setup = setup();
+        setup.port.with(|brick| brick.running = true);
+        let told = std::sync::atomic::AtomicBool::new(false);
+        let on_started = |_: &StartReport| told.store(true, std::sync::atomic::Ordering::Relaxed);
+        let outcome = run_project(
+            &setup.port,
+            &setup.port,
+            &setup.clock,
+            RunProjectOptions {
+                project: "robot",
+                artifacts: &setup.artifacts,
+                launches: &setup.launches,
+                new_launch_id: None,
+                on_started: Some(&on_started),
+            },
+        )
+        .await;
+        assert_eq!(outcome.unwrap_err().code(), Some("program_running"));
+        assert!(!told.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -988,6 +1030,7 @@ mod tests {
                 artifacts: &[],
                 launches: &launches,
                 new_launch_id: None,
+                on_started: None,
             },
         );
         assert_send(&run);

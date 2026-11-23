@@ -7,6 +7,8 @@
 //!
 //! Time is tokio's, paused by the tests (`start_paused`): it moves only when every task
 //! waits, straight to the next timer, so a 10 s wait takes no real time.
+//!
+//! Other crates' tests get it through the `test-support` feature.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -23,13 +25,20 @@ use crate::port::{
 
 /// Virtual wall time on tokio's paused clock, starting at a fixed date.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TestClock {
+pub struct TestClock {
     base: SystemTime,
     start: Instant,
 }
 
+impl Default for TestClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestClock {
-    fn new() -> Self {
+    /// Starts at the fixed date now, by tokio's clock; call it inside the test's runtime.
+    pub fn new() -> Self {
         TestClock {
             base: UNIX_EPOCH + Duration::from_millis(1_700_000_000_000),
             start: Instant::now(),
@@ -51,7 +60,7 @@ type Hook = Box<dyn FnMut(&mut FakeBrick) + Send>;
 type Md5Rewrite = Box<dyn Fn(Option<String>) -> Option<String> + Send>;
 
 /// The fake brick's state, which the tests script directly.
-pub(crate) struct FakeBrick {
+pub struct FakeBrick {
     pub files: BTreeMap<String, Vec<u8>>,
     pub dirs: BTreeSet<String>,
     /// Every call in order, as "<method> <path>".
@@ -162,8 +171,14 @@ impl FakeBrick {
 }
 
 #[derive(Clone)]
-pub(crate) struct FakeBrickPort {
+pub struct FakeBrickPort {
     brick: Arc<Mutex<FakeBrick>>,
+}
+
+impl Default for FakeBrickPort {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FakeBrickPort {
@@ -233,7 +248,7 @@ impl FakeBrickPort {
 }
 
 #[derive(Clone)]
-pub(crate) struct FakeHandle(Weak<Mutex<FakeBrick>>);
+pub struct FakeHandle(Weak<Mutex<FakeBrick>>);
 
 impl FakeHandle {
     /// Runs `action` on the brick once `delay` has passed. With no delay it runs as soon as
@@ -393,16 +408,17 @@ impl BrickPort for FakeBrickPort {
         })
     }
 
+    // Cockpit tells the subscribers when a stop ends a program, as for any other end.
     async fn stop_program(&self) -> Result<ProgramState, BrickError> {
         self.call("stop_program", "", |brick| {
-            brick.running = false;
+            brick.stop();
             Ok(brick.state())
         })
     }
 
     async fn emergency_stop(&self) -> Result<ProgramState, BrickError> {
         self.call("emergency_stop", "", |brick| {
-            brick.running = false;
+            brick.stop();
             Ok(brick.state())
         })
     }
@@ -435,7 +451,7 @@ fn content(source: &FileSource) -> Vec<u8> {
     }
 }
 
-pub(crate) fn md5_hex(data: &[u8]) -> String {
+pub fn md5_hex(data: &[u8]) -> String {
     format!("{:x}", Md5::digest(data))
 }
 

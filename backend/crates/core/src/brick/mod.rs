@@ -8,5 +8,5 @@ pub mod run_control;
 pub mod run_folders;
 pub mod run_results;
 
-#[cfg(test)]
-pub(crate) mod fake;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;

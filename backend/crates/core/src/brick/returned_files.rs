@@ -6,22 +6,26 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::port::{BrickError, BrickFileReader};
 use crate::returned::local_path_for;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReturnedFile {
     pub brick_path: String,
     pub local_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReturnedFailure {
     pub brick_path: String,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ReturnedReport {
     pub downloaded: Vec<ReturnedFile>,
     pub failed: Vec<ReturnedFailure>,

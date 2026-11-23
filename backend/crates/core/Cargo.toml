@@ -23,6 +23,11 @@ tokio = { version = "1", default-features = false, features = ["time", "sync", "
 # nothing to build beyond a C compiler.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
+[features]
+# Exposes the in-memory fake brick (`brick::fake`) to other crates' tests, with the tokio
+# parts it needs: a runtime to spawn its scripted changes on, and paused time.
+test-support = ["tokio/rt", "tokio/test-util"]
+
 [dev-dependencies]
 # A runtime for the tests, with paused time so the waits of a run take no real time.
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "time", "sync"] }
