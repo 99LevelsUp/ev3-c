@@ -22,6 +22,8 @@
 #ifndef EV3_H
 #define EV3_H
 
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -87,6 +89,31 @@ int ev3_button_release_back(void);
 
 /* Returns 1 while Back is held down, 0 when it is not, -1 on error. */
 int ev3_button_back_pressed(void);
+
+/* --- returning files ----------------------------------------------------- */
+
+/*
+ * A program can hand files back to its author: EVƎ C downloads the files a
+ * run marks into the author's workspace after the run ends. Marking writes
+ * the file's full path to the run folder's list at once, so the list
+ * survives a crash; what the file holds is read when the run has ended.
+ * A relative path is taken from the current folder. Paths may not contain
+ * a line break.
+ */
+
+/*
+ * Opens a file like fopen() and marks it for return. Returns the open file,
+ * or NULL with errno set if it cannot be opened (EINVAL for a line break).
+ * Outside a run (no EV3C_RUN_DIR) the file opens and nothing is marked.
+ */
+FILE *ev3_return_fopen(const char *path, const char *mode);
+
+/*
+ * Marks a file the program already created for return. Returns 0, or -1
+ * with errno set: ENOENT if the file does not exist or the program runs
+ * outside a run, EINVAL for a line break, or why the list cannot be written.
+ */
+int ev3_return_file(const char *path);
 
 #ifdef __cplusplus
 }

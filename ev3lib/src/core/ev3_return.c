@@ -1,0 +1,119 @@
+/*
+ * ev3lib: files a program hands back to its author. Each marked file's full
+ * path goes on its own line of the run folder's list, "ret", written with one
+ * append per path, so the list is complete up to the last mark even when the
+ * program crashes. EVƎ C reads the list after the run and downloads the files.
+ */
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "ev3.h"
+
+#define RETURN_LIST "ret"
+
+static int has_line_break(const char *path)
+{
+    return strchr(path, '\n') != NULL || strchr(path, '\r') != NULL;
+}
+
+/*
+ * The full path of `path` without resolving links: the path itself when it is
+ * absolute, else the current folder joined to it. Links are kept so the path
+ * reads as the program wrote it.
+ */
+static int full_path(const char *path, char *full, size_t size)
+{
+    char cwd[PATH_MAX];
+    int written;
+
+    if (path[0] == '/') {
+        written = snprintf(full, size, "%s", path);
+    } else {
+        if (getcwd(cwd, sizeof cwd) == NULL) {
+            return -1;
+        }
+        written = snprintf(full, size, "%s/%s", cwd, path);
+    }
+    if (written < 0 || (size_t)written >= size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+/* Appends the full path of an existing file to the run's list. */
+static int record(const char *path)
+{
+    const char *run_dir = ev3_core_run_dir();
+    char list[PATH_MAX];
+    char line[PATH_MAX + 1];
+    struct stat info;
+    ssize_t written;
+    int length;
+    int fd;
+    int saved;
+
+    if (run_dir == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (stat(path, &info) != 0 || full_path(path, line, sizeof line - 1) != 0) {
+        return -1;
+    }
+    length = (int)strlen(line);
+    line[length++] = '\n';
+    if (snprintf(list, sizeof list, "%s/%s", run_dir, RETURN_LIST) >= (int)sizeof list) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    fd = open(list, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    /* One write per line: an append of this size lands whole. */
+    written = write(fd, line, (size_t)length);
+    saved = errno;
+    close(fd);
+    if (written != length) {
+        errno = written < 0 ? saved : EIO;
+        return -1;
+    }
+    return 0;
+}
+
+FILE *ev3_return_fopen(const char *path, const char *mode)
+{
+    FILE *file;
+    int saved;
+
+    if (has_line_break(path)) {
+        errno = EINVAL;
+        return NULL;
+    }
+    file = fopen(path, mode);
+    if (file == NULL || ev3_core_run_dir() == NULL) {
+        return file;
+    }
+    if (record(path) != 0) {
+        /* Marked for return but not on the list: say so rather than lose it in silence. */
+        saved = errno;
+        fclose(file);
+        errno = saved;
+        return NULL;
+    }
+    return file;
+}
+
+int ev3_return_file(const char *path)
+{
+    if (has_line_break(path)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return record(path);
+}

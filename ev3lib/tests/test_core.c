@@ -1,6 +1,7 @@
 /*
  * Host tests for the ev3lib core: output buffering, motor commands, the stop
- * on exit, the Back takeover request, and the Back button state.
+ * on exit, the Back takeover request, the Back button state, and the list of
+ * files a program returns.
  *
  * Each scenario runs in a fresh process: the test executes itself with
  * "--scenario <name>" and an environment that points ev3lib at fake device
@@ -30,6 +31,9 @@ static char ui_path[300];
 static char project_path[300];
 static char bak_path[320];
 static char out_path[300];
+static char run_path[300];
+static char ret_path[320];
+static char returned_path[320];
 static int failures;
 
 #define CHECK(cond, ...)                                                   \
@@ -71,6 +75,43 @@ static int scenario(const char *name)
     if (strcmp(name, "release-back") == 0) {
         return ev3_button_release_back() == 0 ? 0 : 1;
     }
+    if (strcmp(name, "return-files") == 0) {
+        /* One file opened through ev3lib, one created otherwise and marked after. */
+        const char *project = getenv("EV3C_PROJECT_DIR");
+        char other[400];
+        FILE *f = ev3_return_fopen(getenv("EV3C_TEST_RETURNED"), "w");
+        if (f == NULL || fputs("1,2\n", f) < 0 || fclose(f) != 0) {
+            return 1;
+        }
+        snprintf(other, sizeof other, "%s/other.txt", project);
+        f = fopen(other, "w");
+        if (f == NULL || fclose(f) != 0 || ev3_return_file(other) != 0) {
+            return 2;
+        }
+        /* A relative path is taken from the current folder and recorded in full. */
+        if (chdir(project) != 0 || (f = ev3_return_fopen("relative.txt", "w")) == NULL || fclose(f) != 0) {
+            return 3;
+        }
+        return 0;
+    }
+    if (strcmp(name, "return-refused") == 0) {
+        char missing[400];
+        snprintf(missing, sizeof missing, "%s/missing.txt", getenv("EV3C_PROJECT_DIR"));
+        errno = 0;
+        if (ev3_return_file(missing) != -1 || errno != ENOENT) {
+            return 1;
+        }
+        errno = 0;
+        if (ev3_return_fopen("bad\nname.txt", "w") != NULL || errno != EINVAL || access("bad\nname.txt", F_OK) == 0) {
+            return 2;
+        }
+        return 0;
+    }
+    if (strcmp(name, "return-without-run") == 0) {
+        /* Started outside a run: the file opens, and nothing is recorded. */
+        FILE *f = ev3_return_fopen(getenv("EV3C_TEST_RETURNED"), "w");
+        return f != NULL && fclose(f) == 0 ? 0 : 1;
+    }
     if (strcmp(name, "back-state") == 0) {
         printf("%d\n", ev3_button_back_pressed());
         return 0;
@@ -81,18 +122,24 @@ static int scenario(const char *name)
 
 /* --- helpers, run in the test process ------------------------------------ */
 
-/* Runs a scenario in a child process with stdout sent to out_path; returns its wait status. */
-static int run_scenario(const char *name)
+/*
+ * Runs a scenario in a child process with stdout sent to out_path; returns its
+ * wait status. With in_run nonzero the child gets EV3C_RUN_DIR, as a program
+ * the supervisor starts does.
+ */
+static int run_scenario_in(const char *name, int in_run)
 {
-    char pwm_env[320], ui_env[320], project_env[320];
+    char pwm_env[320], ui_env[320], project_env[320], run_env[320], returned_env[340];
     char *argv[] = { (char *)self, "--scenario", (char *)name, NULL };
-    char *envp[] = { pwm_env, ui_env, project_env, NULL };
+    char *envp[] = { pwm_env, ui_env, project_env, returned_env, in_run ? run_env : NULL, NULL };
     int status = -1;
     pid_t child;
 
     snprintf(pwm_env, sizeof pwm_env, "EV3C_PWM_DEVICE=%s", pwm_path);
     snprintf(ui_env, sizeof ui_env, "EV3C_UI_DEVICE=%s", ui_path);
     snprintf(project_env, sizeof project_env, "EV3C_PROJECT_DIR=%s", project_path);
+    snprintf(run_env, sizeof run_env, "EV3C_RUN_DIR=%s", run_path);
+    snprintf(returned_env, sizeof returned_env, "EV3C_TEST_RETURNED=%s", returned_path);
     fflush(NULL);
     child = fork();
     if (child == 0) {
@@ -108,6 +155,11 @@ static int run_scenario(const char *name)
         return -1;
     }
     return status;
+}
+
+static int run_scenario(const char *name)
+{
+    return run_scenario_in(name, 1);
 }
 
 static int exited_ok(int status)
@@ -231,6 +283,40 @@ static void test_back_state_follows_the_button_device(void)
     CHECK(length == 2 && memcmp(out, "0\n", 2) == 0, "Back released should read as 0, got \"%.*s\"", (int)length, (const char *)out);
 }
 
+static void test_returned_files_are_listed_in_the_run_folder(void)
+{
+    char expected[1200];
+    char actual[1200];
+    size_t length;
+
+    unlink(ret_path);
+    CHECK(exited_ok(run_scenario("return-files")), "the return-files scenario should exit with 0");
+    snprintf(expected, sizeof expected, "%s\n%s/other.txt\n%s/relative.txt\n", returned_path, project_path, project_path);
+    length = read_file(ret_path, (unsigned char *)actual, sizeof actual - 1);
+    actual[length] = '\0';
+    CHECK(strcmp(actual, expected) == 0, "the return list should be\n%s\nbut is\n%s", expected, actual);
+    CHECK(access(returned_path, F_OK) == 0, "the returned file should exist");
+
+    unlink(returned_path);
+    unlink(ret_path);
+}
+
+static void test_return_refuses_a_missing_file_and_a_line_break(void)
+{
+    unlink(ret_path);
+    CHECK(exited_ok(run_scenario("return-refused")), "missing files and line breaks should be refused");
+    CHECK(access(ret_path, F_OK) != 0, "nothing should be recorded for refused files");
+}
+
+static void test_return_outside_a_run_opens_the_file_and_records_nothing(void)
+{
+    unlink(ret_path);
+    CHECK(exited_ok(run_scenario_in("return-without-run", 0)), "the file should open without a run folder");
+    CHECK(access(returned_path, F_OK) == 0, "the file should exist");
+    CHECK(access(ret_path, F_OK) != 0, "no list should be written without a run folder");
+    unlink(returned_path);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--scenario") == 0) {
@@ -249,8 +335,11 @@ int main(int argc, char **argv)
     snprintf(project_path, sizeof project_path, "%s/project", root);
     snprintf(bak_path, sizeof bak_path, "%s/.bak", project_path);
     snprintf(out_path, sizeof out_path, "%s/out", root);
-    if (mkdir(project_path, 0755) != 0) {
-        fprintf(stderr, "cannot create %s: %s\n", project_path, strerror(errno));
+    snprintf(run_path, sizeof run_path, "%s/run", root);
+    snprintf(ret_path, sizeof ret_path, "%s/ret", run_path);
+    snprintf(returned_path, sizeof returned_path, "%s/results.csv", project_path);
+    if (mkdir(project_path, 0755) != 0 || mkdir(run_path, 0755) != 0) {
+        fprintf(stderr, "cannot create %s or %s: %s\n", project_path, run_path, strerror(errno));
         return 1;
     }
 
@@ -259,8 +348,20 @@ int main(int argc, char **argv)
     test_return_from_main_stops_all_motors();
     test_back_takeover_creates_and_removes_the_request();
     test_back_state_follows_the_button_device();
+    test_returned_files_are_listed_in_the_run_folder();
+    test_return_refuses_a_missing_file_and_a_line_break();
+    test_return_outside_a_run_opens_the_file_and_records_nothing();
 
     unlink(bak_path);
+    unlink(ret_path);
+    rmdir(run_path);
+    {
+        char other[400];
+        snprintf(other, sizeof other, "%s/other.txt", project_path);
+        unlink(other);
+        snprintf(other, sizeof other, "%s/relative.txt", project_path);
+        unlink(other);
+    }
     rmdir(project_path);
     unlink(pwm_path);
     unlink(ui_path);
