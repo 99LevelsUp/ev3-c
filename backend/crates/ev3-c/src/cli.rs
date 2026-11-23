@@ -35,7 +35,7 @@ use ev3c_core::toolchain::{
     ToolchainError, ensure_compiler,
 };
 
-use crate::args::parse_arguments;
+use crate::args::{parse_arguments, wants_events};
 use crate::cockpit::{
     BrickHandle, ClientKind, CockpitError, ConnectOptions, Connection, Connector,
 };
@@ -68,6 +68,8 @@ Options:
                         window shows, else the only connected brick)
   --toolchain <path>    a compiler to use instead of the pinned one (or EV3C_TOOLCHAIN)
   --json                print one JSON object instead of text
+  --events              print one JSON event per line as the command proceeds; a line
+                        \"interrupt\" on stdin, or its end, acts as Ctrl+C
   --help, --version";
 
 /// Exit codes besides a run's own.
@@ -140,6 +142,8 @@ impl Interrupts {
 enum Mode {
     Text,
     Json,
+    /// One JSON object per line as the command proceeds; see docs/cli.md.
+    Events,
 }
 
 struct Options {
@@ -234,18 +238,50 @@ impl From<ProjectError> for Stop {
 /// a success (a run without result, a stop that left a program running).
 struct Report {
     pretty: String,
+    compact: String,
     lines: Vec<String>,
     code: i32,
+    /// The terminal event under --events: `done`, `result`, `noResult` or `interrupted`.
+    event: &'static str,
+}
+
+impl Report {
+    fn ending_with(mut self, event: &'static str) -> Self {
+        self.event = event;
+        self
+    }
 }
 
 fn report<T: Serialize>(value: &T, lines: Vec<String>, code: i32) -> Result<Report, Stop> {
-    let pretty = serde_json::to_string_pretty(value)
-        .map_err(|error| Stop::message(format!("The result could not be printed: {error}")))?;
+    let printing = |error: serde_json::Error| {
+        Stop::message(format!("The result could not be printed: {error}"))
+    };
     Ok(Report {
-        pretty,
+        pretty: serde_json::to_string_pretty(value).map_err(printing)?,
+        compact: serde_json::to_string(value).map_err(printing)?,
         lines,
         code,
+        event: "done",
     })
+}
+
+/// One line of --events: `{"event":"<name>"`, the exit code of a terminal event, then the
+/// fields of `object`, the compact JSON of an object.
+fn event_line(name: &str, exit_code: Option<i32>, object: &str) -> String {
+    let mut line = format!("{{\"event\":\"{name}\"");
+    if let Some(code) = exit_code {
+        line.push_str(&format!(",\"exitCode\":{code}"));
+    }
+    let fields = object
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or_default();
+    if !fields.is_empty() {
+        line.push(',');
+        line.push_str(fields);
+    }
+    line.push('}');
+    line
 }
 
 const NOTHING_STARTED: &str = "Interrupted; nothing was started.";
@@ -267,9 +303,10 @@ pub async fn run_cli<C: Connector, K: Clock>(
     interrupts: &mut Interrupts,
     client: &Client,
 ) -> i32 {
+    let events = wants_events(argv);
     let parsed = match parse_arguments(argv) {
         Ok(parsed) => parsed,
-        Err(message) => return usage(io, &message),
+        Err(message) => return usage(io, &message, events),
     };
     if parsed.version {
         io.out(&deps.version);
@@ -294,13 +331,17 @@ pub async fn run_cli<C: Connector, K: Clock>(
         .as_deref()
         .map(|keep| whole_number(keep, "--keep"))
     {
-        Some(Err(Stop::Usage(message))) => return usage(io, &message),
+        Some(Err(Stop::Usage(message))) => return usage(io, &message, events),
         Some(Ok(keep)) => Some(keep),
         _ => None,
     };
     let variable = |name: &str| non_empty(deps.env.get(name).map(String::as_str));
     let options = Options {
-        mode: if parsed.json { Mode::Json } else { Mode::Text },
+        mode: match (parsed.events, parsed.json) {
+            (true, _) => Mode::Events,
+            (false, true) => Mode::Json,
+            (false, false) => Mode::Text,
+        },
         brick: non_empty(parsed.brick.as_deref())
             .or_else(|| variable("EV3C_BRICK"))
             .unwrap_or_else(|| "active".to_owned()),
@@ -321,14 +362,14 @@ pub async fn run_cli<C: Connector, K: Clock>(
             cli.print(&report);
             report.code
         }
-        Err(Stop::Usage(message)) => usage(cli.io, &message),
+        Err(Stop::Usage(message)) => usage(cli.io, &message, events),
         Err(Stop::Interrupted(line)) => {
             match report(
                 &Interruption { interrupted: true },
                 vec![line.to_owned()],
                 EXIT_STOPPED,
             ) {
-                Ok(report) => cli.print(&report),
+                Ok(report) => cli.print(&report.ending_with("interrupted")),
                 Err(_) => cli.io.err(line),
             }
             EXIT_STOPPED
@@ -340,8 +381,20 @@ pub async fn run_cli<C: Connector, K: Clock>(
     }
 }
 
-fn usage(io: &mut dyn Io, message: &str) -> i32 {
+/// A wrong command line: the usage text on standard error, and under --events the terminal
+/// event a caller waits for.
+fn usage(io: &mut dyn Io, message: &str, events: bool) -> i32 {
     io.err(&format!("ev3 c: {message}\n\n{USAGE}"));
+    if events {
+        let failure = Failure {
+            message: message.to_owned(),
+            code: None,
+            failure: None,
+        };
+        if let Ok(object) = serde_json::to_string(&ErrorJson { error: &failure }) {
+            io.out(&event_line("error", Some(EXIT_USAGE), &object));
+        }
+    }
     EXIT_USAGE
 }
 
@@ -377,21 +430,29 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         }
     }
 
-    /// Prints a result: the object with --json, the lines otherwise.
+    /// Prints a result: the object with --json, the terminal event with --events, the lines
+    /// otherwise.
     fn print(&mut self, report: &Report) {
         match self.options.mode {
             Mode::Json => self.io.out(&report.pretty),
+            Mode::Events => {
+                self.io.out(&event_line(
+                    report.event,
+                    Some(report.code),
+                    &report.compact,
+                ));
+            }
             Mode::Text if !report.lines.is_empty() => self.io.out(&report.lines.join("\n")),
             Mode::Text => {}
         }
     }
 
     fn fail(&mut self, failure: &Failure) {
-        match self.options.mode {
-            Mode::Json => match serde_json::to_string_pretty(&ErrorJson { error: failure }) {
-                Ok(text) => self.io.out(&text),
-                Err(_) => self.io.err(&format!("ev3 c: {}", failure.message)),
-            },
+        let object = ErrorJson { error: failure };
+        let printed = match self.options.mode {
+            Mode::Json => serde_json::to_string_pretty(&object),
+            Mode::Events => serde_json::to_string(&object)
+                .map(|object| event_line("error", Some(EXIT_FAILED), &object)),
             Mode::Text => {
                 let code = match (&failure.failure, &failure.code) {
                     (Some(why), Some(_)) => format!(" [{why}]"),
@@ -399,14 +460,33 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                     _ => String::new(),
                 };
                 self.io.err(&format!("ev3 c: {}{code}", failure.message));
+                return;
             }
+        };
+        match printed {
+            Ok(text) => self.io.out(&text),
+            Err(_) => self.io.err(&format!("ev3 c: {}", failure.message)),
         }
     }
 
     /// A line for the person at the terminal, on standard error; with --json too, as the
-    /// TypeScript backend printed compiler messages and the stop notice there.
-    fn notice(&mut self, text: &str) {
-        self.io.err(text);
+    /// TypeScript backend printed compiler messages and the stop notice there. Under --events
+    /// the event `event` with the `fields` stands for it, and standard error stays quiet.
+    fn notice<T: Serialize>(&mut self, text: &str, event: &str, fields: &T) {
+        if self.options.mode == Mode::Events {
+            self.event(event, fields);
+        } else {
+            self.io.err(text);
+        }
+    }
+
+    /// A progress event, under --events only.
+    fn event<T: Serialize>(&mut self, name: &str, fields: &T) {
+        if self.options.mode == Mode::Events
+            && let Ok(object) = serde_json::to_string(fields)
+        {
+            self.io.out(&event_line(name, None, &object));
+        }
     }
 
     async fn build(&mut self, dir: &Path) -> Result<Report, Stop> {
@@ -474,12 +554,18 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         let (_connection, handle) = self.brick().await?;
         let project = built.project.name.clone();
         if self.options.mode == Mode::Text {
-            self.notice(&format!(
+            self.io.err(&format!(
                 "Uploading and running \"{project}\" on {}. Ctrl+C stops it.",
                 handle.brick_id
             ));
         }
 
+        // The start is heard while the run goes on; the loop below reports it.
+        let (started_sender, mut started) = mpsc::unbounded_channel::<StartReport>();
+        let on_started = move |start: &StartReport| {
+            // The receiver lives until the run is over.
+            let _ = started_sender.send(start.clone());
+        };
         // Copied out of `self`, so the run borrows the dependencies, not the command.
         let deps = self.deps;
         let launches = Launches::new();
@@ -492,22 +578,28 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                 artifacts: &built.artifacts,
                 launches: &launches,
                 new_launch_id: None,
-                on_started: None,
+                on_started: Some(&on_started),
             },
         ));
         let mut stopping = false;
         let mut stop: Option<StopFuture<'_>> = None;
         let outcome = loop {
             // The branch futures are gone before a branch's code runs, so that code may use
-            // `self` and `stop` again.
+            // `self` and `stop` again. The start comes first, so it is told before the end.
             tokio::select! {
+                biased;
+                Some(start) = started.recv() => self.event("started", &StartedEvent { start: &start }),
                 outcome = &mut run => break outcome,
                 () = self.interrupts.next() => {
                     if stopping {
                         return Err(Stop::Interrupted(LEFT));
                     }
                     stopping = true;
-                    self.notice("Stopping the program (Ctrl+C again to leave without waiting for its result)…");
+                    self.notice(
+                        "Stopping the program (Ctrl+C again to leave without waiting for its result)…",
+                        "stopping",
+                        &Empty {},
+                    );
                     stop = Some(Box::pin(stop_program(&handle.port)));
                 }
                 // The run hears the stop as the end of the program; its own answer adds nothing.
@@ -515,6 +607,9 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             }
         };
         drop(stop);
+        while let Ok(start) = started.try_recv() {
+            self.event("started", &StartedEvent { start: &start });
+        }
 
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -528,7 +623,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                 launch_id,
                 started_at,
                 start,
-            } => report(
+            } => Ok(report(
                 &NoResultJson {
                     project: &project,
                     brick_id: &handle.brick_id,
@@ -540,12 +635,13 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                 },
                 format_no_result(&project, &launch_id, started_at, "\"ev3 c runs\""),
                 EXIT_FAILED,
-            ),
+            )?
+            .ending_with("noResult")),
             RunOutcome::Result { result, start } => {
                 let returned = return_files(&handle.reader, &project, dir, &result).await;
                 let mut lines = format_run_result(&project, &result);
                 lines.extend(returned.iter().flat_map(format_returned));
-                report(
+                Ok(report(
                     &RunJson {
                         project: &project,
                         brick_id: &handle.brick_id,
@@ -555,7 +651,8 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                     },
                     lines,
                     run_exit_code(&result.record),
-                )
+                )?
+                .ending_with("result"))
             }
         }
     }
@@ -671,7 +768,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         let failed = returned
             .as_ref()
             .is_some_and(|returned| !returned.failed.is_empty());
-        report(
+        Ok(report(
             &ShowJson {
                 project: &project,
                 result: result_json(&result),
@@ -679,7 +776,8 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             },
             lines,
             if failed { EXIT_FAILED } else { EXIT_OK },
-        )
+        )?
+        .ending_with("result"))
     }
 
     async fn delete_runs(&mut self, args: &[String]) -> Result<Report, Stop> {
@@ -801,6 +899,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             compiler_override: self.compiler_override(),
         };
         let hook = self.deps.compile.clone();
+        self.event("building", &BuildingEvent { folder: dir });
         // The compiler runs for seconds and blocks; Ctrl+C still ends the command meanwhile.
         let task = tokio::task::spawn_blocking(move || {
             let compile = hook.as_deref().map(|hook| hook as &CompileStep);
@@ -824,14 +923,29 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             BuildResult::CompileFailed { diagnostics } => (None, Vec::new(), diagnostics, false),
         };
         if !diagnostics.trim().is_empty() {
-            self.notice(diagnostics.trim_end());
+            self.notice(
+                diagnostics.trim_end(),
+                "diagnostics",
+                &DiagnosticsEvent {
+                    text: diagnostics.trim_end(),
+                },
+            );
         }
         match (ok, project) {
-            (true, Some(project)) => Ok(Built {
-                project,
-                artifacts,
-                diagnostics,
-            }),
+            (true, Some(project)) => {
+                self.event(
+                    "built",
+                    &BuiltEvent {
+                        project: &project.name,
+                        artifacts: &artifacts,
+                    },
+                );
+                Ok(Built {
+                    project,
+                    artifacts,
+                    diagnostics,
+                })
+            }
             _ => Err(Stop::message(
                 "The build failed: the compiler reported errors.",
             )),
@@ -867,6 +981,12 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             NOTHING_STARTED,
         )
         .await??;
+        self.event(
+            "connected",
+            &ConnectedEvent {
+                brick_id: &handle.brick_id,
+            },
+        );
         Ok((connection, handle))
     }
 
@@ -1139,4 +1259,36 @@ struct ToolchainJson<'a> {
     origin: CompilerOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<&'a str>,
+}
+
+// The fields of the progress events of --events.
+
+#[derive(Serialize)]
+struct Empty {}
+
+#[derive(Serialize)]
+struct BuildingEvent<'a> {
+    folder: &'a Path,
+}
+
+#[derive(Serialize)]
+struct DiagnosticsEvent<'a> {
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct BuiltEvent<'a> {
+    project: &'a str,
+    artifacts: &'a [BuildArtifact],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectedEvent<'a> {
+    brick_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct StartedEvent<'a> {
+    start: &'a StartReport,
 }

@@ -5,10 +5,12 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+use ev3_c::args::wants_events;
 use ev3_c::cli::{Client, Deps, EXIT_FAILED, EXIT_USAGE, Interrupts, Io, run_cli};
 use ev3_c::cockpit::Unavailable;
 use ev3_c::paths::{PACKAGE_ROOT_VARIABLE, package_root, real_path, toolchain_cache_dir};
 use ev3c_core::port::SystemClock;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
 fn main() {
@@ -54,6 +56,9 @@ async fn run() -> i32 {
     };
 
     let (sender, receiver) = mpsc::unbounded_channel();
+    if wants_events(&argv) {
+        tokio::task::spawn_local(interrupts_from_stdin(sender.clone()));
+    }
     tokio::task::spawn_local(async move {
         // Once listened for, Ctrl+C no longer ends the process: the command decides.
         while tokio::signal::ctrl_c().await.is_ok() {
@@ -70,6 +75,29 @@ async fn run() -> i32 {
         &Client::Terminal,
     )
     .await
+}
+
+/// Under --events, standard input stands for Ctrl+C, which a program that starts `ev3-c`
+/// cannot send on every system: each line `interrupt` is one, and so is the end of input, so
+/// a caller that goes away stops the run it started. Other lines are ignored.
+async fn interrupts_from_stdin(sender: mpsc::UnboundedSender<()>) {
+    let mut input = BufReader::new(tokio::io::stdin());
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match input.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => {
+                let _ = sender.send(());
+                return;
+            }
+            Ok(_) => {
+                if String::from_utf8_lossy(&line).trim() == "interrupt" && sender.send(()).is_err()
+                {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 fn deps() -> Result<Deps<Unavailable>, String> {

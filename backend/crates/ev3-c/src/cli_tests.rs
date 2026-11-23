@@ -742,3 +742,194 @@ async fn a_missing_install_folder_fails_only_the_build() {
     assert_eq!(failed.err, ["ev3 c: EVƎ C's files were not found."]);
     assert_eq!(s.cli(&["stop"]).await.code, EXIT_OK);
 }
+
+/// The events a command printed, checked to be one JSON object per line that ends with
+/// exactly one terminal event: the only one with an exit code, which is the command's.
+fn events(output: &Output) -> Vec<Value> {
+    let events: Vec<Value> = output
+        .out
+        .iter()
+        .map(|line| {
+            assert!(!line.contains('\n'), "one line per event: {line}");
+            serde_json::from_str(line).unwrap()
+        })
+        .collect();
+    let terminal: Vec<&Value> = events
+        .iter()
+        .filter(|event| event.get("exitCode").is_some())
+        .collect();
+    assert_eq!(terminal.len(), 1, "one terminal event: {events:?}");
+    let last = events.last().unwrap();
+    assert_eq!(
+        last["exitCode"], output.code,
+        "the terminal event comes last"
+    );
+    events
+}
+
+fn names(events: &[Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn run_events_tell_the_build_the_brick_the_start_and_end_with_the_result() {
+    let mut s = Setup::new();
+    s.deps.compile = Some(compiler("main.c:1: warning: unused", true));
+    script_run(&s.port(), "hello", 1, exits_with("end=program\nexit=3\n"));
+    let ran = s.cli(&["run", "hello", "--events"]).await;
+    assert_eq!(ran.code, 3);
+    assert!(
+        ran.err.is_empty(),
+        "standard error stays quiet: {:?}",
+        ran.err
+    );
+    let events = events(&ran);
+    assert_eq!(
+        names(&events),
+        [
+            "building",
+            "diagnostics",
+            "built",
+            "connected",
+            "started",
+            "result"
+        ]
+    );
+    assert!(
+        ran.out[0].starts_with("{\"event\":\"building\""),
+        "the name comes first"
+    );
+    assert_eq!(events[0]["folder"], s.dir().to_string_lossy().as_ref());
+    assert_eq!(events[1]["text"], "main.c:1: warning: unused");
+    assert_eq!(events[2]["project"], "hello");
+    assert_eq!(events[2]["artifacts"][1]["kind"], "launcher");
+    assert_eq!(events[3]["brickId"], BRICK_ID);
+    assert_eq!(events[4]["start"]["runSeq"], 1);
+    assert_eq!(events[5]["exitCode"], 3);
+    assert_eq!(
+        events[5]["result"]["record"]["ended"],
+        "the program exited with code 3"
+    );
+    assert_eq!(events[5]["start"], events[4]["start"]);
+}
+
+#[tokio::test]
+async fn an_interrupt_under_events_stops_the_program_and_the_result_still_ends_the_events() {
+    let s = Setup::new();
+    script_run(
+        &s.port(),
+        "hello",
+        1,
+        Ending {
+            record: "end=slot\nsignal=15\n",
+            out: "",
+            returned: None,
+            stops: false,
+        },
+    );
+    let (ran, ()) = tokio::join!(s.cli(&["run", "hello", "--events", "--json"]), async {
+        s.until_running().await;
+        s.interrupt();
+    });
+    assert_eq!(ran.code, EXIT_STOPPED);
+    let events = events(&ran);
+    assert_eq!(
+        names(&events),
+        [
+            "building",
+            "built",
+            "connected",
+            "started",
+            "stopping",
+            "result"
+        ],
+        "--events wins over --json"
+    );
+    assert!(ran.err.is_empty());
+}
+
+#[tokio::test]
+async fn every_way_a_command_ends_is_one_terminal_event() {
+    let mut s = Setup::new();
+    let stopped = s.cli(&["stop", "--events"]).await;
+    let stop_events = events(&stopped);
+    assert_eq!(names(&stop_events), ["connected", "done"]);
+    assert_eq!(stop_events[1]["running"], false);
+
+    let usage = s.cli(&["fly", "--events"]).await;
+    assert_eq!(usage.code, EXIT_USAGE);
+    assert_eq!(
+        events(&usage),
+        [
+            json!({ "event": "error", "exitCode": 2, "error": { "message": "unknown command \"fly\"" } })
+        ]
+    );
+    assert!(
+        usage.err[0].contains("Usage:"),
+        "the usage text still goes to stderr"
+    );
+    assert_eq!(
+        events(&s.cli(&["--brick", "--events"]).await)[0]["exitCode"],
+        2
+    );
+
+    *s.cockpit.brick_failure.lock().unwrap() = Some(CockpitError::new("brick_busy", "busy"));
+    let busy = s.cli(&["runs", "hello", "--events"]).await;
+    assert_eq!(
+        events(&busy),
+        [
+            json!({ "event": "error", "exitCode": 1, "error": { "message": "busy", "code": "brick_busy" } })
+        ]
+    );
+
+    s.deps.compile = Some(compiler("main.c:1: error: expected ';'", false));
+    let failed = s.cli(&["build", "hello", "--events"]).await;
+    let events_of_failure = events(&failed);
+    assert_eq!(
+        names(&events_of_failure),
+        ["building", "diagnostics", "error"]
+    );
+    assert_eq!(
+        events_of_failure[2]["error"]["message"],
+        "The build failed: the compiler reported errors."
+    );
+
+    s.deps.compile = Some(compiler("", true));
+    let showed = s.cli(&["runs", "show", "1", "hello", "--events"]).await;
+    assert_eq!(
+        names(&events(&showed)),
+        ["connected", "error"],
+        "no run folder 1 yet"
+    );
+}
+
+#[tokio::test]
+async fn an_interrupt_before_the_start_ends_the_events_with_interrupted() {
+    let s = Setup::new();
+    let (sender, receiver) = mpsc::unbounded_channel();
+    sender.send(()).unwrap();
+    let argv: Vec<String> = ["run", "hello", "--events"].map(str::to_owned).to_vec();
+    let mut io = Captured::default();
+    let code = run_cli(
+        &argv,
+        &mut io,
+        &s.deps,
+        &mut Interrupts::new(receiver),
+        &Client::Terminal,
+    )
+    .await;
+    let output = Output {
+        code,
+        out: io.out,
+        err: io.err,
+    };
+    assert_eq!(code, EXIT_STOPPED);
+    let events = events(&output);
+    assert_eq!(
+        events.last().unwrap(),
+        &json!({ "event": "interrupted", "exitCode": 130, "interrupted": true })
+    );
+}

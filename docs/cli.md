@@ -50,6 +50,7 @@ each one went, or why it could not be returned.
 | `--brick <name\|id>` | The brick. Without it: `EV3C_BRICK`, else the brick EVƎ Cockpit's VS Code window shows, else the only connected brick. |
 | `--toolchain <path>` | A compiler to use instead of the pinned one; also `EV3C_TOOLCHAIN`. |
 | `--json` | Print one JSON object instead of text, errors included. |
+| `--events` | Print one JSON event per line as the command proceeds (see below); wins over `--json`. |
 
 `EV3_COCKPIT_CHANNEL` selects a development or test daemon instead of the user's own.
 
@@ -75,8 +76,58 @@ not start, why (`[missing_binary]`). With `--json` the object is
   while the program runs ends it, and its result is printed as usual.
 - A second Ctrl+C leaves without waiting for the result; `ev3 c runs` lists the run later.
 
+In any other command, Ctrl+C ends the command with code 130.
+
+## Events (`--events`)
+
+`--events` belongs to the Rust `ev3-c` in `backend/`, which replaces the TypeScript one
+(issue #13). With it, a program that starts `ev3 c` (EVƎ C's VS Code extension will, once per
+command) follows the command as it proceeds. Standard output carries one JSON object per line
+and nothing else; each has `event` first. The progress events come as they happen, and each
+command ends with exactly one terminal event, the last line, which carries `exitCode`.
+
+| Event | When | Other fields |
+|---|---|---|
+| `building` | The build starts (`build`, `upload`, `run`). | `folder`: the project folder |
+| `diagnostics` | The compiler said something, warnings or errors. | `text` |
+| `built` | The build succeeded. | `project`, `artifacts` (as in `build --json`) |
+| `connected` | The brick is held through EVƎ Cockpit. | `brickId` |
+| `started` | `run`: the program was uploaded and started. | `start`: `outcome`, `runSeq`, `uploaded`, `skipped` |
+| `stopping` | `run`: an interrupt asked the program to stop. | |
+
+The terminal event is the object `--json` would print, with `event` and `exitCode` added:
+
+| Event | When |
+|---|---|
+| `result` | `run` or `runs show` has the run's result (`result`, `start`, `returnedFiles`). |
+| `noResult` | `run`: no result was recorded in time (`noResult`). |
+| `done` | Any other command finished (or `runs show` found no record: `result` is `null`). |
+| `error` | The command failed (`error`: `message`, `code`?, `failure`?); `exitCode` 2 for a wrong command line, whose usage text still goes to standard error. |
+| `interrupted` | An interrupt ended the command (`interrupted: true`). |
+
+For example, `ev3 c run --events`:
+
+```
+{"event":"building","folder":"/home/me/robot"}
+{"event":"built","project":"robot","artifacts":[…]}
+{"event":"connected","brickId":"usb-0016530aaaaa"}
+{"event":"started","start":{"outcome":"started","runSeq":7,"uploaded":[…],"skipped":[…]}}
+{"event":"result","exitCode":0,"project":"robot","brickId":"usb-0016530aaaaa","start":{…},"result":{…}}
+```
+
+Standard input stands for Ctrl+C, which a program that starts `ev3 c` cannot send on every
+system: each line `interrupt` acts as one Ctrl+C, and so does the end of standard input, so a
+caller that goes away stops the run it started. Keep standard input an open pipe for as long
+as the command should go on: started with standard input closed or empty, the command is
+interrupted at once. Other lines are ignored. Standard error stays quiet apart from a usage
+text. `--help` and `--version` print text as always.
+
 ## Where things are kept
 
 The downloaded compiler is cached per user: `%LOCALAPPDATA%\ev3-c\toolchain` on Windows,
 `~/Library/Caches/ev3-c/toolchain` on macOS, `$XDG_CACHE_HOME/ev3-c/toolchain` (or
 `~/.cache/ev3-c/toolchain`) on Linux. It is separate from the one the VS Code extension keeps.
+
+The Rust `ev3-c` finds EVƎ C's own files, ev3lib's headers (`ev3lib/include`) and the brick
+runtime (`out/runtime`), in the nearest folder above the program that holds both;
+`EV3C_PACKAGE_ROOT` names that folder instead.
