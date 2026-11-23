@@ -12,6 +12,9 @@ publish.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# Downloads the pinned compiler. rustls with ring and bundled web roots: no native TLS, and
+# nothing to build beyond a C compiler.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [lints]
 workspace = true

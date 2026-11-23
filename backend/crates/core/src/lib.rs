@@ -4,6 +4,7 @@
 
 pub mod launcher;
 pub mod project;
+pub mod toolchain;
 
 mod json;
 #[cfg(test)]
