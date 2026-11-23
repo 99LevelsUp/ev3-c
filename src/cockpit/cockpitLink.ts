@@ -33,6 +33,11 @@ export interface ConnectOptions {
     readonly version: string;
     /** A test channel; by default EV3_COCKPIT_CHANNEL or the user's own daemon. */
     readonly channel?: string;
+    /**
+     * `addon` (the default) for EVƎ C's extension and command, `mcp` for its MCP server: an
+     * agent, which can never confirm anything on a person's behalf.
+     */
+    readonly kind?: 'addon' | 'mcp';
 }
 
 /**
@@ -44,7 +49,7 @@ export function connectCockpit(options: ConnectOptions): Promise<CockpitClient> 
     const channel = options.channel ?? process.env.EV3_COCKPIT_CHANNEL;
     return CockpitClient.connect({
         name: options.name,
-        kind: 'addon',
+        kind: options.kind ?? 'addon',
         version: options.version,
         ...(channel ? { channel } : {}),
     });

@@ -23,7 +23,7 @@ const vscodeImport = /(?:from\s+|require\(\s*|import\(\s*)['"]vscode['"]/;
 
 // Everything the `ev3 c` command runs: the core, the cockpit link, what both frontends
 // share, and the command itself.
-for (const dir of ['core', 'cockpit', 'shared', 'cli']) {
+for (const dir of ['core', 'cockpit', 'shared', 'cli', 'mcp']) {
     test(`no module under src/${dir} imports the vscode API`, () => {
         const files = sourceFiles(path.join(srcDir, dir));
         assert.ok(files.length > 0, `expected sources in src/${dir} to scan`);

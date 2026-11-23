@@ -31,6 +31,7 @@ Commands:
   get <brick path> [local path]
                         download a file from the brick (default: its name, here)
   toolchain             check the compiler, downloading it when needed
+  mcp                   serve the project commands as MCP tools on stdin and stdout
 
 The project folder holds ${PROJECT_FILE}; it is the current folder when none is given.
 Files a run returns land in the project's returned/run-<n> folder.

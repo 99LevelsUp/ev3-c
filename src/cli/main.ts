@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { connectCockpit } from '../cockpit/cockpitLink';
-import { cliCore, EXIT, runCli } from './cli';
+import { serveStdio } from '../mcp/server';
+import { cliCore, CliDeps, EXIT, runCli } from './cli';
 
 // The `ev3-c` program: what the cockpit's `ev3 c …` starts. It wires runCli to this
 // process: its arguments, folders, environment, output and Ctrl+C.
@@ -33,10 +34,8 @@ export function toolchainCacheDir(env: Readonly<Record<string, string | undefine
 async function main(): Promise<number> {
     const packageRoot = findPackageRoot(__dirname);
     const version = String((JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')) as { version?: unknown }).version ?? '0.0.0');
-    return runCli(process.argv.slice(2), {
-        out: text => process.stdout.write(`${text}\n`),
-        err: text => process.stderr.write(`${text}\n`),
-    }, {
+    const argv = process.argv.slice(2);
+    const deps: CliDeps = {
         connect: connectCockpit,
         core: cliCore,
         packageRoot,
@@ -48,7 +47,14 @@ async function main(): Promise<number> {
             process.on('SIGINT', handler);
             return () => { process.off('SIGINT', handler); };
         },
-    });
+    };
+    if (argv[0] === 'mcp' && argv.length === 1) {
+        return serveStdio(deps);
+    }
+    return runCli(argv, {
+        out: text => process.stdout.write(`${text}\n`),
+        err: text => process.stderr.write(`${text}\n`),
+    }, deps);
 }
 
 if (require.main === module) {
