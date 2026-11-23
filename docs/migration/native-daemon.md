@@ -64,6 +64,11 @@ committed (the library is MIT and the cockpit's repository is public), so a fres
 build without the cockpit's sources. Replace the dependency with the published version once it
 exists.
 
+Since the cockpit's first pre-release, the vendored tarball is the one the release carries
+(`ev3-cockpit-client-<version>.tgz`, now `0.3.0-preview.1`), checked with
+`gh attestation verify <file> --repo 99LevelsUp/ev3-cockpit` before it is committed. The staging
+script stays for a client change the cockpit has not released yet.
+
 Only `src/cockpit/cockpitLink.ts` imports the library (a unit test guards this), always as `@ev3-cockpit/client`, so the
 renames at the switch (`NativeCockpitClient` → `CockpitClient`, the contract at the top level)
 touch one file.
