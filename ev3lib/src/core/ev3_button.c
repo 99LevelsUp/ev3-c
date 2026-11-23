@@ -1,5 +1,5 @@
 /*
- * ev3lib buttons: taking over the Back button and reading its state.
+ * ev3lib buttons: taking over the Back button and reading every button.
  *
  * Only bytecode in the user slot can block Back, so a program asks for it:
  * it creates the file ".bak" in its project folder, and the launcher that
@@ -30,7 +30,6 @@
  *     (c_ui/source/c_ui.c:708-716).
  */
 #define EV3_BUTTON_COUNT 6
-#define EV3_BUTTON_BACK  5
 
 static int back_request_path(char *path, size_t size)
 {
@@ -77,10 +76,20 @@ int ev3_button_release_back(void)
 
 int ev3_button_back_pressed(void)
 {
-    int fd = open(ev3_core_ui_device(), O_RDONLY);
+    return ev3_button_pressed(EV3_BUTTON_BACK);
+}
+
+int ev3_button_pressed(int button)
+{
     void *mapped;
     int pressed;
+    int fd;
 
+    if (button < 0 || button >= EV3_BUTTON_COUNT) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = open(ev3_core_ui_device(), O_RDONLY);
     if (fd < 0) {
         return -1;
     }
@@ -89,7 +98,7 @@ int ev3_button_back_pressed(void)
     if (mapped == MAP_FAILED) {
         return -1;
     }
-    pressed = ((volatile const unsigned char *)mapped)[EV3_BUTTON_BACK] != 0;
+    pressed = ((volatile const unsigned char *)mapped)[button] != 0;
     munmap(mapped, EV3_BUTTON_COUNT);
     return pressed;
 }

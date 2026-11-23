@@ -1,6 +1,6 @@
 /*
  * ev3lib core: start-up and exit, the environment the supervisor passes, the
- * motor device writer shared by the other modules, and sleep.
+ * device paths and writer shared by the other modules, and sleep.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -14,7 +14,9 @@
 
 static int initialized;
 static const char *pwm_device = "/dev/lms_pwm";
+static const char *motor_device = "/dev/lms_motor";
 static const char *ui_device = "/dev/lms_ui";
+static const char *sound_device = "/dev/lms_sound";
 static const char *project_dir;
 static const char *run_dir;
 
@@ -43,7 +45,9 @@ void ev3_core_init(void)
     setvbuf(stderr, NULL, _IONBF, 0);
 
     pwm_device = env_or("EV3C_PWM_DEVICE", "/dev/lms_pwm");
+    motor_device = env_or("EV3C_MOTOR_DEVICE", "/dev/lms_motor");
     ui_device = env_or("EV3C_UI_DEVICE", "/dev/lms_ui");
+    sound_device = env_or("EV3C_SOUND_DEVICE", "/dev/lms_sound");
     project_dir = env_or("EV3C_PROJECT_DIR", NULL);
     run_dir = env_or("EV3C_RUN_DIR", NULL);
 
@@ -78,26 +82,46 @@ const char *ev3_core_run_dir(void)
     return run_dir;
 }
 
+const char *ev3_core_pwm_device(void)
+{
+    return pwm_device;
+}
+
+const char *ev3_core_motor_device(void)
+{
+    return motor_device;
+}
+
 const char *ev3_core_ui_device(void)
 {
     return ui_device;
 }
 
+const char *ev3_core_sound_device(void)
+{
+    return sound_device;
+}
+
 int ev3_core_pwm_write(const unsigned char *command, size_t length)
 {
+    return ev3_core_device_write(pwm_device, command, length);
+}
+
+int ev3_core_device_write(const char *device, const void *data, size_t length)
+{
     /*
-     * Opened per command, as the firmware's driver takes one command per
-     * write(). O_APPEND changes nothing on the device and keeps every command
+     * Opened per command, as the firmware's drivers take one command per
+     * write(). O_APPEND changes nothing on a device and keeps every command
      * in order in a fake device file during host tests.
      */
-    int fd = open(pwm_device, O_WRONLY | O_APPEND);
+    int fd = open(device, O_WRONLY | O_APPEND);
     ssize_t written;
     int saved;
 
     if (fd < 0) {
         return -1;
     }
-    written = write(fd, command, length);
+    written = write(fd, data, length);
     saved = errno;
     close(fd);
     if (written != (ssize_t)length) {

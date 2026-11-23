@@ -12,9 +12,11 @@
  *                     supervisor sets it; ev3_button_take_back() needs it.
  *   EV3C_RUN_DIR      The folder of the current run, where the supervisor
  *                     stores the program's output and result.
- *   EV3C_PWM_DEVICE   Motor device, default /dev/lms_pwm.
- *   EV3C_UI_DEVICE    Button device, default /dev/lms_ui.
- * The two device variables exist for tests on a PC. All four are read once,
+ *   EV3C_PWM_DEVICE   Motor command device, default /dev/lms_pwm.
+ *   EV3C_MOTOR_DEVICE Motor measurement device, default /dev/lms_motor.
+ *   EV3C_UI_DEVICE    Button and LED device, default /dev/lms_ui.
+ *   EV3C_SOUND_DEVICE Sound device, default /dev/lms_sound.
+ * The device variables exist for tests on a PC. All of them are read once,
  * when the program starts.
  *
  * Functions that can fail return -1 and set errno.
@@ -73,6 +75,51 @@ int ev3_motor_set_power(int ports, int power);
  */
 int ev3_motor_stop(int ports, int brake);
 
+/*
+ * Runs the motors at a regulated speed from -100 to 100 percent of full
+ * speed: unlike power, the firmware holds the speed under load. Values
+ * outside the range are limited to it. Returns 0 or -1.
+ */
+int ev3_motor_set_speed(int ports, int speed);
+
+/*
+ * Sets which way the motors turn for a positive power or speed: 1 as built,
+ * -1 reversed, 0 the other way than now. Returns 0 or -1 (EINVAL for any
+ * other value).
+ */
+int ev3_motor_set_polarity(int ports, int polarity);
+
+/*
+ * Turns the motors by the given number of degrees at a regulated speed, and
+ * returns at once; the sign of the speed gives the direction. When done the
+ * motors brake (brake nonzero) or coast. ev3_motor_wait() waits for the end.
+ * Returns 0 or -1.
+ */
+int ev3_motor_run_degrees(int ports, int speed, unsigned int degrees, int brake);
+
+/* As ev3_motor_run_degrees(), for a time in milliseconds instead of degrees. */
+int ev3_motor_run_ms(int ports, int speed, unsigned int ms, int brake);
+
+/*
+ * Returns 1 while any of the motors still runs a ev3_motor_run_degrees() or
+ * ev3_motor_run_ms() command, 0 when none does, -1 on error.
+ */
+int ev3_motor_busy(int ports);
+
+/* Waits until ev3_motor_busy() is 0 for the motors. Returns 0 or -1. */
+int ev3_motor_wait(int ports);
+
+/*
+ * Reads one motor: its speed (-100..100) and the degrees it turned since its
+ * count was last reset, as the firmware's rotation sensor counts them. Pass
+ * one port. Either pointer may be NULL. Returns 0, or -1 (EINVAL for no port
+ * or several).
+ */
+int ev3_motor_read(int port, int *speed, int *degrees);
+
+/* Sets the degree count of the motors to 0. Returns 0 or -1. */
+int ev3_motor_reset_count(int ports);
+
 /* --- buttons ------------------------------------------------------------- */
 
 /*
@@ -89,6 +136,49 @@ int ev3_button_release_back(void);
 
 /* Returns 1 while Back is held down, 0 when it is not, -1 on error. */
 int ev3_button_back_pressed(void);
+
+/* The brick's buttons, for ev3_button_pressed(). */
+#define EV3_BUTTON_UP    0
+#define EV3_BUTTON_ENTER 1
+#define EV3_BUTTON_DOWN  2
+#define EV3_BUTTON_RIGHT 3
+#define EV3_BUTTON_LEFT  4
+#define EV3_BUTTON_BACK  5
+
+/* Returns 1 while the button is held down, 0 when it is not, -1 on error (EINVAL for no such button). */
+int ev3_button_pressed(int button);
+
+/* --- LEDs and sound ------------------------------------------------------ */
+
+/* The patterns of the two LEDs below the screen, for ev3_led_set(). */
+#define EV3_LED_OFF          0
+#define EV3_LED_GREEN        1
+#define EV3_LED_RED          2
+#define EV3_LED_ORANGE       3
+#define EV3_LED_GREEN_FLASH  4
+#define EV3_LED_RED_FLASH    5
+#define EV3_LED_ORANGE_FLASH 6
+#define EV3_LED_GREEN_PULSE  7
+#define EV3_LED_RED_PULSE    8
+#define EV3_LED_ORANGE_PULSE 9
+
+/*
+ * Shows a pattern on the LEDs. The firmware sets them too, for example when
+ * a program starts, so the last one to set them wins. Returns 0, or -1
+ * (EINVAL for no such pattern).
+ */
+int ev3_led_set(int pattern);
+
+/*
+ * Plays a tone and returns at once: volume 0..100 (higher is limited to
+ * 100), frequency in Hz (the firmware keeps it within what the speaker can
+ * play), for the given milliseconds, or until ev3_sound_stop() for 0.
+ * Returns 0 or -1.
+ */
+int ev3_sound_tone(int volume, unsigned int frequency, unsigned int ms);
+
+/* Stops the sound playing. Returns 0 or -1. */
+int ev3_sound_stop(void);
 
 /* --- returning files ----------------------------------------------------- */
 
