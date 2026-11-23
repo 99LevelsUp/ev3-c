@@ -92,6 +92,7 @@ dependencies = [
 name = "ev3-c"
 version = "0.0.1"
 dependencies = [
+ "ev3-channel",
  "ev3-client",
  "ev3c-core",
  "serde",

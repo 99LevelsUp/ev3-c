@@ -1,7 +1,7 @@
 //! The commands' link to EVƎ Cockpit's daemon. The commands see the daemon only through
 //! [`Connector`] and [`Connection`], so the transport, the cockpit's client library and its
-//! types stay out of them: a test hands in a fake, and until the Rust client exists
-//! (issue #13 U4) the program hands in [`Unavailable`].
+//! types stay out of them: a test hands in a fake, and the program hands in
+//! [`crate::daemon::CockpitConnector`], built on EVƎ Cockpit's own client.
 //!
 //! What a connection does for a command, as the TypeScript `CockpitSession` did:
 //! - it resolves the brick setting with [`resolve_brick`] against the daemon's brick list and
@@ -15,10 +15,7 @@
 use std::fmt;
 use std::future::Future;
 
-use ev3c_core::port::{
-    BrickEntry, BrickError, BrickFileReader, BrickPort, DeployItem, FileSource, ProgramState,
-    RemoveReport, StartReport, Subscription,
-};
+use ev3c_core::port::{BrickError, BrickFileReader, BrickPort};
 
 /// What kind of client EVƎ C connects as. An `Mcp` client is an agent, which can never
 /// confirm anything on a person's behalf.
@@ -218,87 +215,6 @@ pub fn shown_bricks(clients: &[ClientStatus]) -> Vec<String> {
     shown
 }
 
-/// The connector until EVƎ C's Rust backend has a client for the cockpit's daemon (issue #13
-/// U4): every connection fails with `daemon_unavailable`, so the brick commands fail cleanly
-/// while building and the toolchain work.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Unavailable;
-
-/// What [`Unavailable`] connects to and reaches through: nothing, as no value exists.
-#[derive(Debug, Clone, Copy)]
-pub enum Never {}
-
-pub const UNAVAILABLE_MESSAGE: &str = "EVƎ C's Rust backend is not yet connected to EVƎ Cockpit (issue #13 U4); use the TypeScript ev3-c for commands that need a brick.";
-
-impl Connector for Unavailable {
-    type Connection = Never;
-
-    async fn connect(&self, _options: &ConnectOptions) -> Result<Never, CockpitError> {
-        Err(CockpitError::new("daemon_unavailable", UNAVAILABLE_MESSAGE))
-    }
-}
-
-impl Connection for Never {
-    type Port = Never;
-    type Reader = Never;
-
-    async fn brick(&self, _setting: &str) -> Result<BrickHandle<Never, Never>, CockpitError> {
-        match *self {}
-    }
-}
-
-impl BrickFileReader for Never {
-    async fn read_file(&self, _path: &str) -> Result<Vec<u8>, BrickError> {
-        match *self {}
-    }
-}
-
-impl BrickPort for Never {
-    async fn list(&self, _path: &str) -> Result<Vec<BrickEntry>, BrickError> {
-        match *self {}
-    }
-
-    async fn exists(&self, _path: &str) -> Result<bool, BrickError> {
-        match *self {}
-    }
-
-    async fn write_file(&self, _path: &str, _source: &FileSource) -> Result<(), BrickError> {
-        match *self {}
-    }
-
-    async fn remove_paths(
-        &self,
-        _paths: &[String],
-        _recursive: bool,
-    ) -> Result<RemoveReport, BrickError> {
-        match *self {}
-    }
-
-    async fn deploy_and_run(
-        &self,
-        _files: &[DeployItem],
-        _run_path: &str,
-    ) -> Result<StartReport, BrickError> {
-        match *self {}
-    }
-
-    async fn stop_program(&self) -> Result<ProgramState, BrickError> {
-        match *self {}
-    }
-
-    async fn emergency_stop(&self) -> Result<ProgramState, BrickError> {
-        match *self {}
-    }
-
-    async fn program_state(&self) -> Result<ProgramState, BrickError> {
-        match *self {}
-    }
-
-    async fn subscribe(&self) -> Result<Subscription, BrickError> {
-        match *self {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,19 +326,5 @@ mod tests {
             "two windows on the same brick are one brick"
         );
         assert!(shown_bricks(&[client("vscode", None)]).is_empty());
-    }
-
-    #[tokio::test]
-    async fn unavailable_fails_every_connection_with_daemon_unavailable() {
-        let options = ConnectOptions {
-            name: "ev3 c stop (terminal)".to_owned(),
-            version: "1.2.3".to_owned(),
-            kind: ClientKind::Addon,
-            channel: None,
-        };
-        // The connection type has no values, so the result can only be an error.
-        let Err(error) = Unavailable.connect(&options).await;
-        assert_eq!(error.code.as_deref(), Some("daemon_unavailable"));
-        assert!(error.message.contains("issue #13 U4"), "{}", error.message);
     }
 }

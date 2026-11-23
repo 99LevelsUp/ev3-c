@@ -21,6 +21,9 @@ ev3c-core = { path = "../core" }
 # EVƎ Cockpit's client of its daemon, at a pinned commit of its repository (not on crates.io).
 # The contract comes from it too (`ev3_client::contract`), so the two never differ.
 ev3-client = { git = "https://github.com/99LevelsUp/ev3-cockpit", rev = "82331db85493f2eb15ba0b5b792981f8d41a40bc" }
+# The cockpit's channel helpers, at the same commit: a private folder for files the daemon
+# writes for EVƎ C, named at random.
+ev3-channel = { git = "https://github.com/99LevelsUp/ev3-cockpit", rev = "82331db85493f2eb15ba0b5b792981f8d41a40bc" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # One thread is enough for one command or one MCP client: `rt` with a LocalSet runs the MCP

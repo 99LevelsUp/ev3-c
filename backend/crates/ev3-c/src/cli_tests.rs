@@ -16,7 +16,8 @@ use crate::cli::{
     Client, Deps, EXIT_FAILED, EXIT_OK, EXIT_STOPPED, EXIT_USAGE, Interrupts, run_cli,
     run_exit_code,
 };
-use crate::cockpit::{CockpitError, Unavailable};
+use crate::cockpit::CockpitError;
+use crate::daemon::CockpitConnector;
 use crate::testing::{
     BRICK_ID, Captured, Ending, FakeCockpit, FakeConnector, OTHER_ID, compiler, deps, project,
     script_run,
@@ -697,10 +698,14 @@ async fn toolchain_reports_the_compiler_given_by_the_setting() {
 }
 
 #[tokio::test]
-async fn without_a_cockpit_connection_builds_work_and_brick_commands_fail_cleanly() {
+async fn without_an_installed_cockpit_builds_work_and_brick_commands_say_how_to_get_one() {
     let fake = Setup::new();
+    // A state root of its own with no install.json and no daemon running on its channel.
     let deps = Deps {
-        connector: Unavailable,
+        connector: CockpitConnector {
+            daemon_args: Vec::new(),
+            state_root: Some(crate::testing::temp_dir("ev3c-no-cockpit-")),
+        },
         clock: TestClock::new(),
         package_root: fake.deps.package_root.clone(),
         toolchain_cache_dir: fake.deps.toolchain_cache_dir.clone(),
@@ -727,10 +732,12 @@ async fn without_a_cockpit_connection_builds_work_and_brick_commands_fail_cleanl
     assert_eq!(code, EXIT_FAILED);
     let printed: Value = serde_json::from_str(&io.out[0]).unwrap();
     assert_eq!(printed["error"]["code"], "daemon_unavailable");
+    assert_eq!(printed["error"]["failure"], "missing_binary");
     assert!(
         printed["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("issue #13 U4"))
+            .is_some_and(|message| message.contains("install EVƎ Cockpit")),
+        "{printed}"
     );
 }
 

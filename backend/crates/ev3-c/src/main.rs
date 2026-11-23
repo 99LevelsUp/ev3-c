@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use ev3_c::args::wants_events;
 use ev3_c::cli::{Client, Deps, EXIT_FAILED, EXIT_USAGE, Interrupts, Io, run_cli};
-use ev3_c::cockpit::Unavailable;
+use ev3_c::daemon::CockpitConnector;
 use ev3_c::mcp::serve_stdio;
 use ev3_c::paths::{PACKAGE_ROOT_VARIABLE, package_root, real_path, toolchain_cache_dir};
 use ev3c_core::port::SystemClock;
@@ -106,7 +106,7 @@ async fn interrupts_from_stdin(sender: mpsc::UnboundedSender<()>) {
     }
 }
 
-fn deps() -> Result<Deps<Unavailable>, String> {
+fn deps() -> Result<Deps<CockpitConnector>, String> {
     let env: HashMap<String, String> = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect();
@@ -122,7 +122,7 @@ fn deps() -> Result<Deps<Unavailable>, String> {
     let home = home_dir(&env);
     let cache = toolchain_cache_dir(&|name| env.get(name).cloned(), std::env::consts::OS, &home);
     Ok(Deps {
-        connector: Unavailable,
+        connector: CockpitConnector::default(),
         clock: SystemClock,
         package_root,
         toolchain_cache_dir: cache,
