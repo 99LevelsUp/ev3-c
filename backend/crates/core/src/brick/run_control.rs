@@ -960,11 +960,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_can_be_spawned_on_a_multi_threaded_runtime() {
+    async fn every_brick_operation_can_be_spawned_on_a_multi_threaded_runtime() {
+        use crate::brick::deploy::deploy;
+        use crate::brick::returned_files::{download_file, download_returned_files};
+        use crate::brick::run_folders::delete_runs;
+        use crate::brick::run_results::{list_runs, read_run_result};
+
         fn assert_send<T: Send>(_: &T) {}
         let port = FakeBrickPort::new();
         let launches = Launches::new();
         let clock = port.clock();
+        let local = std::path::Path::new("returned");
+        assert_send(&deploy(&port, &[]));
+        assert_send(&delete_runs(&port, "robot", 0));
+        assert_send(&list_runs(&port, &port, "robot", &launches));
+        assert_send(&read_run_result(&port, &port, "robot", 1, &launches));
+        assert_send(&download_returned_files(&port, "robot", &[], local));
+        assert_send(&download_file(&port, "/a", local));
+        assert_send(&stop_program(&port));
+        assert_send(&emergency_stop(&port));
         let run = run_project(
             &port,
             &port,
