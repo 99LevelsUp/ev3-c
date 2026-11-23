@@ -16,7 +16,7 @@
 const path = require('node:path');
 const out = path.join(__dirname, '..', '..', 'out');
 const { connectCockpit } = require(path.join(out, 'cockpit', 'cockpitLink.js'));
-const { CockpitSession } = require(path.join(out, 'host', 'cockpitSession.js'));
+const { CockpitSession } = require(path.join(out, 'shared', 'cockpitSession.js'));
 
 const FOLDER = '/home/root/lms2012/prjs/CockpitFixture';
 const PROGRAM = `${FOLDER}/Wait.rbf`;
@@ -39,25 +39,35 @@ async function main() {
     const exists = await port.exists(FOLDER);
     step(`files/exists ${FOLDER}: ${exists}`);
 
+    // The daemon keeps start numbers per brick across its runs (runs.json of the channel), so
+    // this start's number is whatever it hands out; the end is a stopped state with that
+    // number or a later one. States heard before the start returns are kept and judged then.
     const states = [];
+    let startSeq;
     let ended;
     const end = new Promise((resolve, reject) => {
         ended = resolve;
         setTimeout(() => reject(new Error(`no end of the program within ${END_TIMEOUT_MS} ms; states: ${JSON.stringify(states)}`)), END_TIMEOUT_MS).unref();
     });
+    const judge = () => {
+        const last = states.find(e => e.kind === 'program' && !e.state.running && startSeq !== undefined && e.state.runSeq >= startSeq);
+        if (last) {
+            ended(last.state);
+        }
+    };
     const subscription = await port.onBrickEvent(event => {
         states.push(event);
         step(`event ${JSON.stringify(event)}`);
-        if (event.kind === 'program' && !event.state.running && event.state.runSeq >= 1) {
-            ended(event.state);
-        }
+        judge();
     });
 
     const start = await port.deployAndRun([{ brickPath: PROGRAM, source: { data: Buffer.from(WAIT_RBF, 'base64') } }], PROGRAM);
     step(`deployAndRun: ${JSON.stringify(start)}`);
-    if (start.outcome !== 'started' || start.runSeq !== 1 || start.uploaded.length !== 1) {
+    if (start.outcome !== 'started' || start.runSeq < 1 || start.uploaded.length !== 1) {
         throw new Error('the start does not match the recording');
     }
+    startSeq = start.runSeq;
+    judge();
 
     const last = await end;
     step(`program ended: ${JSON.stringify(last)}`);
