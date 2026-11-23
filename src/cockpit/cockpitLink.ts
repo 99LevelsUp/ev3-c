@@ -1,17 +1,19 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { NativeCockpitClient, nativeContract } from '@ev3-cockpit/client';
+import { CockpitClient } from '@ev3-cockpit/client';
+import type {
+    ClientStatus, ContractBrick, DeployFile, DeployResult, ErrorCode, ProgramState as ContractState,
+} from '@ev3-cockpit/client';
 import type { BrickEvent, BrickPort, DeployItem, FileSource, ProgramState, StartReport, Subscription } from '../core';
 
 // EVƎ C's link to EVƎ Cockpit's daemon. This is the only module that imports the cockpit's
-// client library, so the renames at the cockpit's switch (NativeCockpitClient becomes
-// CockpitClient, the contract moves to the top level) touch this file only. It does not
-// import VS Code: the `ev3 c` command can use it as it is.
+// client library, so a change of the library touches this file only. It does not import
+// VS Code: the `ev3 c` command can use it as it is.
 
-export type CockpitClient = NativeCockpitClient;
-type ContractBrick = nativeContract.ContractBrick;
-type ContractState = nativeContract.ProgramState;
+export { CockpitClient };
+/** The error codes of cockpit's contract. */
+export type CockpitErrorCode = ErrorCode;
 
 /** Inline content of a file write is limited to this many bytes. */
 export const INLINE_WRITE_LIMIT = 4096;
@@ -40,7 +42,7 @@ export interface ConnectOptions {
  */
 export function connectCockpit(options: ConnectOptions): Promise<CockpitClient> {
     const channel = options.channel ?? process.env.EV3_COCKPIT_CHANNEL;
-    return NativeCockpitClient.connect({
+    return CockpitClient.connect({
         name: options.name,
         kind: 'addon',
         version: options.version,
@@ -64,15 +66,81 @@ export function isBrickOnline(bricks: readonly ContractBrick[], brickId: string)
 }
 
 /**
+ * The bricks the cockpit's VS Code windows show, kept current from `daemon/status` and
+ * `daemon/showsChanged`. Each window is a client of kind `vscode`; with several windows,
+ * several bricks may be shown.
+ */
+export class ShownBricks {
+    private clients: readonly ClientStatus[] = [];
+    private readonly listeners = new Set<() => void>();
+    private readonly watches: { dispose(): void }[];
+
+    private constructor(private readonly client: CockpitClient) {
+        this.watches = [
+            client.on('daemon/showsChanged', p => this.set(p.clients)),
+            // A new daemon knows the windows anew; ask it.
+            client.onReconnected(() => { void this.refresh(); }),
+        ];
+    }
+
+    /** Follows what the windows show; a daemon that cannot say counts as showing nothing. */
+    static async follow(client: CockpitClient): Promise<ShownBricks> {
+        const shown = new ShownBricks(client);
+        await shown.refresh();
+        return shown;
+    }
+
+    /** The distinct brick ids the cockpit's windows show. */
+    bricks(): string[] {
+        return [...new Set(this.clients.filter(c => c.kind === 'vscode' && c.shows !== undefined).map(c => c.shows as string))];
+    }
+
+    onChanged(listener: () => void): { dispose(): void } {
+        this.listeners.add(listener);
+        return { dispose: () => this.listeners.delete(listener) };
+    }
+
+    dispose(): void {
+        this.listeners.clear();
+        for (const watch of this.watches) {
+            watch.dispose();
+        }
+    }
+
+    private async refresh(): Promise<void> {
+        try {
+            this.set((await this.client.request('daemon/status', {})).clients);
+        } catch {
+            this.set([]);
+        }
+    }
+
+    private set(clients: readonly ClientStatus[]): void {
+        this.clients = clients;
+        for (const listener of [...this.listeners]) {
+            listener();
+        }
+    }
+}
+
+/**
  * The brick the `ev3-c.brick` setting names now. A name or id is passed on as written
  * (cockpit matches names without regard to case and refuses an unknown one). `active`
- * means the only connected brick: the daemon keeps no active brick, and the brick picked
- * in the cockpit's window cannot be read yet. This rule lives here alone, so it can be
- * replaced once the cockpit tells clients which brick its window shows.
+ * means the brick the cockpit's VS Code window shows; when no window shows one, the only
+ * connected brick. Windows showing different bricks leave the choice to the setting.
  */
-export function resolveBrick(client: CockpitClient, setting: string): string {
+export function resolveBrick(client: CockpitClient, setting: string, shown: readonly string[] = []): string {
     if (setting !== 'active') {
         return client.brick(setting)?.brickId ?? setting;
+    }
+    if (shown.length === 1) {
+        return shown[0];
+    }
+    if (shown.length > 1) {
+        const names = shown.map(id => client.brick(id)?.name ?? id);
+        throw new CockpitLinkError(
+            `EVƎ Cockpit's windows show different bricks (${names.join(', ')}); set "ev3-c.brick" to the one EVƎ C should use.`,
+            'brick_ambiguous');
     }
     const online = client.bricks().filter(b => isBrickOnline([b], b.brickId));
     if (online.length === 1) {
@@ -146,7 +214,7 @@ function writeSource(source: FileSource): { fromLocalPath: string } | { content:
     return { content: Buffer.from(source.data).toString('base64') };
 }
 
-function deployFile(item: DeployItem): nativeContract.DeployFile {
+function deployFile(item: DeployItem): DeployFile {
     const source = writeSource(item.source);
     return {
         remotePath: item.brickPath,
@@ -155,7 +223,7 @@ function deployFile(item: DeployItem): nativeContract.DeployFile {
     };
 }
 
-function startReport(result: nativeContract.DeployResult): StartReport {
+function startReport(result: DeployResult): StartReport {
     return { outcome: result.outcome, runSeq: result.runSeq, uploaded: result.uploaded, skipped: result.skipped };
 }
 

@@ -22,9 +22,9 @@ from current cockpit builds (see "Answers from the cockpit").
 
 ## Today → native
 
-| Today (API v1, `CockpitConsumer`) | Native (`NativeCockpitClient`, contract 2) | Used in EVƎ C | Notes |
+| Today (API v1, `CockpitConsumer`) | Native (`CockpitClient`, contract 2) | Used in EVƎ C | Notes |
 |---|---|---|---|
-| `getExtension(id).activate()`, `apiVersion === 1`, `registerConsumer('ev3-c')` | `NativeCockpitClient.connect({ name, kind: 'addon', version })`; no `daemon` option, the client starts what `install.json` records | `src/extension.ts`, `src/host/cockpitAdapter.ts` `connectCockpit` | Start failures are a `DaemonStartError` with `failure`; a contract mismatch is `failure: 'contract_mismatch'`, not a version check of ours |
+| `getExtension(id).activate()`, `apiVersion === 1`, `registerConsumer('ev3-c')` | `CockpitClient.connect({ name, kind: 'addon', version })`; no `daemon` option, the client starts what `install.json` records | `src/extension.ts`, `src/host/cockpitAdapter.ts` `connectCockpit` | Start failures are a `DaemonStartError` with `failure`; a contract mismatch is `failure: 'contract_mismatch'`, not a version check of ours |
 | consumer `dispose()` | `client.dispose()` | `src/extension.ts` | Closes the connection and every subscription |
 | `listBricks()` → `ApiBrick { signedIn, active, … }` | `client.bricks()` → `ContractBrick { connected, reconnecting?, holders, … }` | `cockpitAdapter.ts` `isBrickOnline`, `statusBar.ts` | `signedIn` becomes `connected`; there is no `active` |
 | `getActiveBrickId()`, `onActiveBrickChanged` | none: each client keeps its own active brick (`activeBrick()`, `setActiveBrick()`), and setting it starts foreground telemetry | `resolveBrickId` for the setting `ev3-c.brick = "active"`, `statusBar.ts` | EVƎ C can no longer read the brick picked in the cockpit's UI. EVƎ C does not call `setActiveBrick`, because it shows no telemetry (decision of 22.11.2026) |
@@ -42,7 +42,7 @@ from current cockpit builds (see "Answers from the cockpit").
 | `isProgramRunning(brick)` | `programs/status` (`waitMs` optional) | `deploy.ts`, `runFolders.ts`, `runControl.ts`, `statusBar.ts` | |
 | `onProgramStateChanged(brick, listener)`; ends silently when the session ends | `client.subscribePrograms(brick, listener)` → `{ state, dispose }`; `ProgramState { running, runSeq, stoppedBy? }` | `cockpitAdapter.ts` `BrickEvents`, `runControl.ts`, `statusBar.ts` | The run's end is `running: false` with `runSeq >=` the run's own; it replaces the "armed" wait. Still ends silently when the brick is signed out |
 | no reconnect event; EVƎ C watched `signedIn` | `bricks/reconnected` notification; `client.onReconnected` for a new daemon | `cockpitAdapter.ts` | |
-| error `code` (string) | `error.code` typed as `nativeContract.ErrorCode`; `data.holder`, `data.candidates`, `data.command` | `errorMessages.ts`, `runControl.ts`, `deploy.ts` | `kind` (error class) is gone; new codes: `brick_busy`, `brick_ambiguous`, `brick_not_found`, `brick_unreachable`, `link_lost`, `needs_person`, `daemon_unavailable`, `outcome_unknown`, `cancelled`, `invalid_request` |
+| error `code` (string) | `error.code`, the contract's `ErrorCode`; `data.holder`, `data.candidates`, `data.command` | `errorMessages.ts`, `runControl.ts`, `deploy.ts` | `kind` (error class) is gone; new codes: `brick_busy`, `brick_ambiguous`, `brick_not_found`, `brick_unreachable`, `link_lost`, `needs_person`, `daemon_unavailable`, `outcome_unknown`, `cancelled`, `invalid_request` |
 | no questions | `client.onQuestion((q, { signal }) => 'yes' \| 'no' \| 'keep')` | new in `src/host` | An add-on may be asked `sweep` for its own transfers; `signal` aborts when the daemon withdraws the question |
 | no cancellation | `request(method, params, { signal })` → `cancelled` | not used yet | For Ctrl+C in `ev3 c run` |
 | no log | `log/notice { level, text }` | not used yet | For toasts EVƎ C shows |
@@ -62,7 +62,7 @@ compiled cockpit checkout (`npm run compile` there) with the cockpit's own `stag
 into `.cockpit-client/ev3-cockpit-client.tgz`, and `package.json` depends on that tarball.
 Replace the dependency with the published version once it exists.
 
-Only `src/cockpit/nativeCockpit.ts` imports the library (a unit test guards this), always as `@ev3-cockpit/client`, so the
+Only `src/cockpit/cockpitLink.ts` imports the library (a unit test guards this), always as `@ev3-cockpit/client`, so the
 renames at the switch (`NativeCockpitClient` → `CockpitClient`, the contract at the top level)
 touch one file.
 
@@ -72,7 +72,7 @@ touch one file.
    daemon tells no one else, and the extension exports nothing. The cockpit puts the question to
    its owner (one proposal: `daemon/status` says which brick each client shows). Until then
    `ev3-c.brick = "active"` means the only connected brick; with several, the author sets the
-   setting. The rule lives in one function, `resolveBrick` in `src/cockpit/nativeCockpit.ts`.
+   setting. The rule lives in one function, `resolveBrick` in `src/cockpit/cockpitLink.ts`.
 2. **API v1** left the cockpit's local master on 20.11.2026 (cf8c8e6), which is not pushed;
    everything published still carries it, so EVƎ C's `main` works against published cockpit
    builds. The cockpit tells EVƎ C when its master goes to origin and when U17 runs; this
@@ -118,3 +118,22 @@ touch one file.
 EVƎ C's session, brick hold and port against `ev3-cockpitd` in replay mode; no brick is needed and
 the steps are in the script. It passed on 22.11.2026 with daemon and client 0.2.549: the brick
 held, the start `started` with `runSeq` 1, the running and stopped states, the folder removed.
+## After the cockpit's switch (23.11.2026)
+
+The cockpit's master now carries the native daemon only, and its client library changed:
+
+- `NativeCockpitClient` is `CockpitClient`, and the generated contract is exported at the
+  top level (`ErrorCode`, `ContractBrick`, `DeployFile`, …). EVƎ C's link module is now
+  `src/cockpit/cockpitLink.ts`; it is still the only one that imports the library.
+- `ContractError` has no `kind`; EVƎ C decides on `error.code` as before. Its messages are
+  keyed by the contract's `ErrorCode`, so a code the cockpit renames or drops fails EVƎ C's build.
+- **The active brick can be read.** `daemon/status` gives each client's `shows`, and
+  `daemon/showsChanged` tells every change. `ev3-c.brick = "active"` now means the brick the
+  cockpit's VS Code window (a client of kind `vscode`) shows; with no window showing one, the
+  only connected brick; with windows showing different bricks, the author sets the setting.
+  The status bar follows the window too.
+- **`runSeq` survives a daemon replacement** (the daemon keeps it per brick in `runs.json`). Only
+  a damaged `runs.json` starts again from 0, so EVƎ C keeps ending the wait on any stopped slot
+  after a reconnect.
+- The staging script loads the cockpit's `scripts/package-npm.mts` (Node strips the types) and
+  refuses a staged client that is not the native one at the top level.

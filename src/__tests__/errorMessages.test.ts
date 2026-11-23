@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { BRICK_ERROR_MESSAGES, START_FAILURE_MESSAGES, userMessage } from '../host/errorMessages';
+import { BRICK_ERROR_MESSAGES, brickErrorMessage, START_FAILURE_MESSAGES, userMessage } from '../host/errorMessages';
 import { FakeCockpitError } from './fakeCockpit';
 
 // Every code the native contract names that an add-on can meet, except those only the
@@ -18,7 +18,7 @@ test('each cockpit error code EVƎ C meets maps to its own user message', () => 
     assert.equal(userMessage(new Error('something odd')), 'something odd');
     for (const code of CODES) {
         const message = userMessage(new FakeCockpitError(code));
-        assert.ok(message.startsWith(BRICK_ERROR_MESSAGES[code]), `${code} → ${message}`);
+        assert.ok(message.startsWith(brickErrorMessage(code) ?? '?'), `${code} → ${message}`);
     }
 });
 

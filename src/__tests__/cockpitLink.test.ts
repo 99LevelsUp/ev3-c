@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { BrickEvent, brickErrorCode } from '../core';
-import { createBrickPort, INLINE_WRITE_LIMIT, resolveBrick } from '../cockpit/nativeCockpit';
+import { createBrickPort, INLINE_WRITE_LIMIT, resolveBrick, ShownBricks } from '../cockpit/cockpitLink';
 import { BRICK_ID, FakeCockpitClient, FakeCockpitError, fakeBrick } from './fakeCockpit';
 
 const P = '/home/root/lms2012/prjs/hello';
@@ -86,7 +86,48 @@ test('a cockpit error reaches the core unchanged, with its code', async () => {
     }
 });
 
-test('"active" is the only connected brick; a name or id is taken as written', () => {
+test('"active" is the brick the cockpit\'s window shows, even with several connected', () => {
+    const fake = new FakeCockpitClient();
+    fake.brickList.push(fakeBrick('bt-001653000bbb', 'BBB'));
+    const client = fake.asClient();
+    assert.equal(resolveBrick(client, 'active', ['bt-001653000bbb']), 'bt-001653000bbb');
+    assert.equal(resolveBrick(client, 'AAA', ['bt-001653000bbb']), BRICK_ID, 'a named brick wins over the window');
+    assert.throws(() => resolveBrick(client, 'active', [BRICK_ID, 'bt-001653000bbb']), (error: unknown) => {
+        assert.equal(brickErrorCode(error), 'brick_ambiguous');
+        assert.match(String((error as Error).message), /windows show different bricks \(AAA, BBB\)/);
+        return true;
+    });
+});
+
+test('the shown bricks follow daemon/status, then daemon/showsChanged, counting only cockpit windows', async () => {
+    const fake = new FakeCockpitClient();
+    fake.clientStatuses = [
+        { name: 'EVƎ Cockpit (VS Code)', kind: 'vscode', version: '1', buildKind: 'release', shows: BRICK_ID },
+        { name: 'ev3 (terminal)', kind: 'cli', version: '1', buildKind: 'release', shows: 'bt-001653000bbb' },
+    ];
+    const shown = await ShownBricks.follow(fake.asClient());
+    assert.deepEqual(shown.bricks(), [BRICK_ID]);
+
+    let changes = 0;
+    shown.onChanged(() => changes++);
+    fake.setShown('bt-001653000bbb', 'bt-001653000bbb');
+    assert.deepEqual(shown.bricks(), ['bt-001653000bbb'], 'two windows on the same brick are one brick');
+    fake.setShown(undefined);
+    assert.deepEqual(shown.bricks(), [], 'a window that shows none');
+    assert.equal(changes, 2);
+
+    // A new daemon is asked again.
+    fake.clientStatuses = [{ name: 'EVƎ Cockpit (VS Code)', kind: 'vscode', version: '1', buildKind: 'release', shows: BRICK_ID }];
+    fake.daemonReplaced();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(shown.bricks(), [BRICK_ID]);
+
+    shown.dispose();
+    fake.setShown('bt-001653000bbb');
+    assert.deepEqual(shown.bricks(), [BRICK_ID], 'nothing is heard after dispose');
+});
+
+test('"active" without a window showing a brick is the only connected brick; a name or id is taken as written', () => {
     const fake = new FakeCockpitClient();
     const client = fake.asClient();
     assert.equal(resolveBrick(client, 'active'), BRICK_ID);

@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { connectCockpit, CockpitClient } from './cockpit/nativeCockpit';
+import { connectCockpit, CockpitClient } from './cockpit/cockpitLink';
 import { BrickAccess, defaultCore, HostEnvironment, registerBrickCommands, registerProjectCommands } from './host/commands';
 import { CockpitSession } from './host/cockpitSession';
 import { askPerson } from './host/questions';

@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import type { CockpitClient } from '../cockpit/nativeCockpit';
+import type { CockpitClient } from '../cockpit/cockpitLink';
 
 // A stand-in for EVƎ Cockpit's native client, as far as EVƎ C uses it: the cached brick
 // list, `request` for the contract methods EVƎ C sends, program-state subscriptions, and
@@ -50,6 +50,8 @@ export class FakeCockpitClient {
     readonly failures = new Map<string, Error>();
     /** File contents `files/read` answers with, by path. */
     readonly files = new Map<string, Uint8Array>();
+    /** The clients `daemon/status` lists, with the brick each shows. */
+    clientStatuses: { name: string; kind: string; version: string; buildKind: string; shows?: string }[] = [];
     running = false;
     runSeq = 0;
     disposed = false;
@@ -108,6 +110,15 @@ export class FakeCockpitClient {
         for (const handler of [...(this.handlers.get(name) ?? [])]) {
             handler(params);
         }
+    }
+
+    /** A cockpit window (a `vscode` client) shows these bricks; everyone hears it. */
+    setShown(...brickIds: (string | undefined)[]): void {
+        this.clientStatuses = brickIds.map((shows, i) => ({
+            name: `EVƎ Cockpit (VS Code ${i + 1})`, kind: 'vscode', version: '0.0.0', buildKind: 'release',
+            ...(shows === undefined ? {} : { shows }),
+        }));
+        this.notify('daemon/showsChanged', { clients: this.clientStatuses });
     }
 
     daemonReplaced(): void {
@@ -178,6 +189,7 @@ export class FakeCockpitClient {
         const brickId = String(params.brick ?? '');
         switch (method) {
         case 'files/list': return { entries: [{ name: 'prog', kind: 'file', bytes: 3, md5: 'abc' }] };
+        case 'daemon/status': return { clients: this.clientStatuses };
         case 'bricks/connect': {
             const found = this.brick(brickId);
             if (found === undefined) {

@@ -1,5 +1,5 @@
 import { brickErrorCode } from '../core';
-import { startFailure } from '../cockpit/nativeCockpit';
+import { CockpitErrorCode, startFailure } from '../cockpit/cockpitLink';
 
 // What the author reads when a brick operation fails. Cockpit's errors carry a stable
 // `code`; each code EVƎ C can meet gets a sentence that says what to do. A daemon that
@@ -8,7 +8,8 @@ import { startFailure } from '../cockpit/nativeCockpit';
 const CONNECTION = 'The connection to the brick failed. Check the cable or the Bluetooth link in EVƎ Cockpit, then try again.';
 const COCKPIT = 'EVƎ Cockpit could not serve the request. Try again; if it repeats, reload the window.';
 
-export const BRICK_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+/** Keyed by the contract's codes, so a code the cockpit renames or drops fails the build. */
+export const BRICK_ERROR_MESSAGES: Readonly<Partial<Record<CockpitErrorCode, string>>> = {
     not_connected: 'No brick is connected. Connect one in EVƎ Cockpit, or check the "ev3-c.brick" setting.',
     brick_not_found: 'EVƎ Cockpit knows no brick by the name or id in "ev3-c.brick". Check the setting.',
     brick_ambiguous: 'Several bricks match. Set "ev3-c.brick" to the id or a unique name of the brick EVƎ C should use.',
@@ -68,8 +69,13 @@ export function userMessage(error: unknown): string {
             return `${holder} is writing to the brick right now. Try again when it is done. (${code})`;
         }
     }
-    const known = code !== undefined && Object.hasOwn(BRICK_ERROR_MESSAGES, code) ? BRICK_ERROR_MESSAGES[code] : undefined;
+    const known = code === undefined ? undefined : brickErrorMessage(code);
     return known === undefined ? own : `${known} (${code})`;
+}
+
+/** The sentence for a cockpit error code, if EVƎ C has one. */
+export function brickErrorMessage(code: string): string | undefined {
+    return Object.hasOwn(BRICK_ERROR_MESSAGES, code) ? BRICK_ERROR_MESSAGES[code as CockpitErrorCode] : undefined;
 }
 
 function holderOf(error: unknown): string | undefined {

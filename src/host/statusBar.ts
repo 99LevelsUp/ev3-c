@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Subscription } from '../core';
-import { isBrickOnline, resolveBrick } from '../cockpit/nativeCockpit';
-import { CockpitSession, Connected } from './cockpitSession';
+import { isBrickOnline } from '../cockpit/cockpitLink';
+import { CockpitSession, Connected, resolveSetting } from './cockpitSession';
 import { COMMAND_IDS } from './commands';
 import { brickSetting } from './settings';
 
@@ -36,7 +36,7 @@ export class ProgramStatusBar implements vscode.Disposable {
         }
         let brickId: string;
         try {
-            brickId = resolveBrick(connected.client, brickSetting());
+            brickId = resolveSetting(connected, brickSetting());
         } catch {
             this.unbind();
             this.show('disconnected');
@@ -83,7 +83,13 @@ export class ProgramStatusBar implements vscode.Disposable {
 
     private attach(connected: Connected | undefined): void {
         this.bricksWatch?.dispose();
-        this.bricksWatch = connected?.client.onBricksChanged(() => this.update());
+        if (connected !== undefined) {
+            // The bar follows the bricks and, for "active", the brick the cockpit's window shows.
+            const watches = [connected.client.onBricksChanged(() => this.update()), connected.shown.onChanged(() => this.update())];
+            this.bricksWatch = { dispose: () => watches.forEach(w => w.dispose()) };
+        } else {
+            this.bricksWatch = undefined;
+        }
         this.unbind();
         this.update();
     }

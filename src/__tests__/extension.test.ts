@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { activate, CLIENT_NAME, cockpitConnector } from '../extension';
 import { BuildProjectOptions, BuildResult } from '../core';
-import { connectCockpit } from '../cockpit/nativeCockpit';
+import { connectCockpit } from '../cockpit/cockpitLink';
 import { COMMAND_IDS, defaultCore, registerProjectCommands } from '../host/commands';
 import { BRICK_ID, FakeCockpitClient, FakeCockpitError } from './fakeCockpit';
 
@@ -72,7 +72,7 @@ function projectFolder(config: object | undefined): string {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const errors = () => stub.__state.messages.filter(m => m.level === 'error');
-const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => !['programs/subscribe', 'programs/status', 'bricks/connect'].includes(method));
+const brickCalls = (fake: FakeCockpitClient) => fake.calls.filter(([method]) => !['programs/subscribe', 'programs/status', 'bricks/connect', 'daemon/status'].includes(method));
 
 beforeEach(() => {
     stub.__reset();
@@ -236,6 +236,22 @@ test('Stop and Emergency Stop reach the brick the setting names', async () => {
     ]);
     assert.deepEqual(fake.calls.filter(([method]) => method === 'bricks/connect'), [['bricks/connect', { brick: BRICK_ID }]],
         'EVƎ C holds the brick itself, once while it stays connected');
+});
+
+test('"active" follows the brick the cockpit\'s window shows, and the status bar with it', async () => {
+    const { fake } = installCockpit();
+    fake.brickList.push({ ...fake.brickList[0], brickId: 'bt-001653000bbb', name: 'BBB' });
+    activate(context());
+    await settle();
+    const item = stub.__state.statusBarItems[0];
+    assert.match(item.text, /no brick/i, 'two bricks connected and no window shows one');
+
+    fake.setShown('bt-001653000bbb');
+    await settle();
+    assert.match(item.text, /idle/i);
+    await vscode.commands.executeCommand('ev3-c.stop');
+    assert.deepEqual(brickCalls(fake), [['programs/stop', { brick: 'bt-001653000bbb' }]]);
+    assert.deepEqual(errors(), []);
 });
 
 test('another brick in the setting is connected and the previous hold released', async () => {

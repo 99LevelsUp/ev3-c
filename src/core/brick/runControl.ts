@@ -182,9 +182,9 @@ class ResultWait {
             this.deadline = this.clock.now() + RESULT_WAIT_MS;
             return;
         }
-        // The end may have been missed while disconnected. A daemon that replaced the one
-        // that started this run counts starts from 0 again, so after a reconnect a stopped
-        // slot ends the run whatever its number.
+        // The end may have been missed while disconnected. The cockpit keeps its start
+        // numbers across a daemon replacement, but starts again from 0 when its record of
+        // them is damaged, so after a reconnect a stopped slot ends the run whatever its number.
         this.check(true);
     }
 

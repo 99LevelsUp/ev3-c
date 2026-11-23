@@ -1,5 +1,5 @@
 import { BrickFileReader } from '../core';
-import { CockpitClient, CockpitPort, createBrickPort, isBrickOnline, resolveBrick } from '../cockpit/nativeCockpit';
+import { CockpitClient, CockpitPort, createBrickPort, isBrickOnline, resolveBrick, ShownBricks } from '../cockpit/cockpitLink';
 
 // The host's connection to EVƎ Cockpit's daemon. It connects on first use, not at
 // activation, so a daemon that is not ready yet (the cockpit records how to start it when
@@ -38,6 +38,13 @@ export class BrickPorts {
 export interface Connected {
     readonly client: CockpitClient;
     readonly ports: BrickPorts;
+    /** The bricks the cockpit's windows show, which `active` follows. */
+    readonly shown: ShownBricks;
+}
+
+/** The brick the setting names now on this connection. */
+export function resolveSetting(connected: Connected, setting: string): string {
+    return resolveBrick(connected.client, setting, connected.shown.bricks());
 }
 
 export class CockpitSession {
@@ -55,18 +62,21 @@ export class CockpitSession {
         if (this.connected !== undefined) {
             return Promise.resolve(this.connected);
         }
-        this.connecting ??= this.connect().then(client => {
+        this.connecting ??= this.connect().then(async client => {
+            const shown = await ShownBricks.follow(client);
             if (this.disposed) {
+                shown.dispose();
                 client.dispose();
                 throw new Error('EVƎ C is shutting down.');
             }
-            const connected = { client, ports: new BrickPorts(client) };
+            const connected = { client, ports: new BrickPorts(client), shown };
             this.connected = connected;
             // No daemon could be reached again: the next command connects afresh.
             client.onLost(() => {
                 if (this.connected === connected) {
                     this.connected = undefined;
                     connected.ports.dispose();
+                    shown.dispose();
                     client.dispose();
                     this.fire(undefined);
                 }
@@ -99,7 +109,7 @@ export class CockpitSession {
     async brick(setting: string): Promise<BrickHandle> {
         const connected = await this.ready();
         const { client, ports } = connected;
-        const wanted = resolveBrick(client, setting);
+        const wanted = resolveSetting(connected, setting);
         if (this.held?.connected !== connected || this.held.brickId !== wanted || !isBrickOnline(client.bricks(), wanted)) {
             const brickId = (await client.request('bricks/connect', { brick: wanted })).brickId;
             const previous = this.held;
@@ -122,6 +132,7 @@ export class CockpitSession {
         this.disposed = true;
         this.listeners.clear();
         this.connected?.ports.dispose();
+        this.connected?.shown.dispose();
         this.connected?.client.dispose();
         this.connected = undefined;
     }

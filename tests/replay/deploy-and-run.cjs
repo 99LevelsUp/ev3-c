@@ -15,7 +15,7 @@
 
 const path = require('node:path');
 const out = path.join(__dirname, '..', '..', 'out');
-const { connectCockpit } = require(path.join(out, 'cockpit', 'nativeCockpit.js'));
+const { connectCockpit } = require(path.join(out, 'cockpit', 'cockpitLink.js'));
 const { CockpitSession } = require(path.join(out, 'host', 'cockpitSession.js'));
 
 const FOLDER = '/home/root/lms2012/prjs/CockpitFixture';

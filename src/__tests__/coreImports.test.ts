@@ -40,5 +40,5 @@ test('only the cockpit link imports the cockpit\'s client library', () => {
     const importers = sourceFiles(srcDir)
         .filter(file => !file.includes(`${path.sep}__tests__${path.sep}`))
         .filter(file => libraryImport.test(fs.readFileSync(file, 'utf8')));
-    assert.deepEqual(importers.map(file => path.relative(srcDir, file).split(path.sep).join('/')), ['cockpit/nativeCockpit.ts']);
+    assert.deepEqual(importers.map(file => path.relative(srcDir, file).split(path.sep).join('/')), ['cockpit/cockpitLink.ts']);
 });
