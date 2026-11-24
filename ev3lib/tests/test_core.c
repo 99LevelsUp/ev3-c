@@ -223,6 +223,16 @@ static int scenario(const char *name)
         ev3_lcd_update();
         return 0;
     }
+    if (strcmp(name, "lcd-scroll") == 0) {
+        /* 20 lines of '!' in the normal font (9 rows) scroll the display several times. */
+        alarm(5);
+        ev3_lcd_set_auto_update(false);
+        for (int i = 0; i < 20; i++) {
+            ev3_lcd_println("!");
+        }
+        ev3_lcd_update();
+        return 0;
+    }
     if (strcmp(name, "lcd-no-fonts") == 0) {
         Ev3Result result = ev3_lcd_try_draw_text(0, 0, "x");
         printf("%s|%s\n", ev3_error_string(result), ev3_error_message());
@@ -822,6 +832,23 @@ static void test_the_display_draws_with_the_firmware_fonts_into_the_framebuffer(
         CHECK((actual[0 * 60 + 160 / 3] & 0xE0 >> 3 * (160 % 3)) != 0, "the steep line reaches 160, 0");
         CHECK((actual[64 * 60 + 75 / 3] & 0xE0 >> 3 * (75 % 3)) != 0, "the circle passes 75, 64");
         CHECK((actual[95 * 60 + 85 / 3] & 0xE0 >> 3 * (85 % 3)) == 0, "outside the shapes stays white");
+    }
+    unlink(lcd_marker);
+
+    /*
+     * Scrolling moves whole lines: every '!' keeps its first row on a multiple of
+     * 9, so the top line is whole, and the cursor's empty line is the last one.
+     */
+    write_file(lcd_path, "", 0);
+    CHECK(exited_ok(run_scenario("lcd-scroll")), "the lcd-scroll scenario should end within 5 s and exit with 0");
+    length = read_file(lcd_path, actual, sizeof actual);
+    CHECK(length == 60 * 128, "the framebuffer is 60 by 128 bytes, got %zu", length);
+    if (length == 60 * 128) {
+        for (int y = 0; y < 128; y++) {
+            bool black = (actual[y * 60] & 0xE0) != 0;
+            bool expect = y % 9 == 0 && y < 117;
+            CHECK(black == expect, "row %d: pixel 0 is %s", y, black ? "black" : "white");
+        }
     }
     unlink(lcd_marker);
 
