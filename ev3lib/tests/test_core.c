@@ -35,6 +35,8 @@ static char project_path[300];
 static char bak_path[320];
 static char out_path[300];
 static char err_path[300];
+static char analog_path[300];
+static char uart_path[300];
 static char run_path[300];
 static char ret_path[320];
 static char returned_path[320];
@@ -179,6 +181,18 @@ static int scenario(const char *name)
         printf("%d\n", ev3_button_is_pressed(EV3_BUTTON_BACK));
         return 0;
     }
+    if (strcmp(name, "sensors") == 0) {
+        Ev3ColorRgb rgb = ev3_sensor_read_rgb(EV3_PORT_2);
+        int angle = 0;
+        printf("%d %d %d %d\n", ev3_sensor_get_type(EV3_PORT_1), ev3_sensor_get_type(EV3_PORT_2),
+               ev3_sensor_get_type(EV3_PORT_3), ev3_sensor_get_type(EV3_PORT_4));
+        printf("%d %d %.1f %d/%d/%d\n", ev3_sensor_read_touch(EV3_PORT_1), ev3_sensor_read_reflected(EV3_PORT_2),
+               (double)ev3_sensor_read_distance_cm(EV3_PORT_3), rgb.red, rgb.green, rgb.blue);
+        printf("%s|%s\n", ev3_error_string(ev3_sensor_try_read_gyro_angle(EV3_PORT_4, &angle)), ev3_error_message());
+        printf("%s|%s\n", ev3_error_string(ev3_sensor_try_read_gyro_angle(EV3_PORT_2, &angle)), ev3_error_message());
+        printf("%s|%s\n", ev3_error_string(ev3_sensor_try_read_gyro_angle(EV3_PORT_B, &angle)), ev3_error_message());
+        return 0;
+    }
     fprintf(stderr, "unknown scenario %s\n", name);
     return 2;
 }
@@ -193,8 +207,10 @@ static int scenario(const char *name)
 static int run_scenario_in(const char *name, int in_run)
 {
     char pwm_env[320], ui_env[320], motor_env[320], sound_env[320], project_env[320], run_env[320], returned_env[340];
+    char analog_env[320], uart_env[320];
     char *argv[] = { (char *)self, "--scenario", (char *)name, NULL };
-    char *envp[] = { pwm_env, ui_env, motor_env, sound_env, project_env, returned_env, in_run ? run_env : NULL, NULL };
+    char *envp[] = { pwm_env, ui_env, motor_env, sound_env, project_env, returned_env, analog_env, uart_env,
+                     in_run ? run_env : NULL, NULL };
     int status = -1;
     pid_t child;
 
@@ -205,6 +221,8 @@ static int run_scenario_in(const char *name, int in_run)
     snprintf(project_env, sizeof project_env, "EV3C_PROJECT_DIR=%s", project_path);
     snprintf(run_env, sizeof run_env, "EV3C_RUN_DIR=%s", run_path);
     snprintf(returned_env, sizeof returned_env, "EV3C_TEST_RETURNED=%s", returned_path);
+    snprintf(analog_env, sizeof analog_env, "EV3C_ANALOG_DEVICE=%s", analog_path);
+    snprintf(uart_env, sizeof uart_env, "EV3C_UART_DEVICE=%s", uart_path);
     fflush(NULL);
     child = fork();
     if (child == 0) {
@@ -541,6 +559,87 @@ static void test_a_run_returns_when_the_motors_are_done(void)
     CHECK(length > 4 && bytes_equal(expected, sizeof expected, actual + 4, length - 4), "motor device received other bytes");
 }
 
+/* Offsets into lms2012.h's ANALOG and UART, as ev3lib's sensor code asserts them. */
+#define ANALOG_SIZE 5172
+#define ANALOG_PIN1(p) (2 * (p))
+#define ANALOG_PIN6(p) (8 + 2 * (p))
+#define ANALOG_CONN(p) (5160 + (p))
+#define UART_SIZE 42744
+#define UART_TYPES(p, m) (((p) * 8 + (m)) * 56)
+#define UART_RAW(p, slot) (4192 + ((p) * 300 + (slot)) * 32)
+#define UART_ACTUAL(p) (42592 + 2 * (p))
+#define UART_STATUS(p) (42608 + (p))
+
+static void put16(unsigned char *at, int value)
+{
+    at[0] = (unsigned char)(value & 0xFF);
+    at[1] = (unsigned char)((value >> 8) & 0xFF);
+}
+
+static void put_float(unsigned char *at, float value)
+{
+    memcpy(at, &value, sizeof value);
+}
+
+/* One mode of a UART sensor, as the driver describes it (lms2012.h TYPES). */
+static void put_mode(unsigned char *uart, int port, int mode, const char *name, int type, int format,
+                     float raw_max, float si_max)
+{
+    unsigned char *types = uart + UART_TYPES(port, mode);
+    memcpy(types, name, strlen(name));
+    types[12] = (unsigned char)type;
+    types[14] = (unsigned char)mode;
+    types[15] = 1;
+    types[16] = (unsigned char)format;
+    put_float(types + 24, raw_max);
+    put_float(types + 40, si_max);
+}
+
+static void test_sensors_are_found_and_read_from_the_shared_memory(void)
+{
+    static unsigned char analog[ANALOG_SIZE];
+    static unsigned char uart[UART_SIZE];
+    static const char expected[] =
+        "1 2 3 0\n"
+        "1 42 123.4 42/300/400\n"
+        "EV3_ERR_DEVICE|nothing is plugged into port 4; plug in a gyro sensor\n"
+        "EV3_ERR_DEVICE|port 2 has a color sensor, not a gyro sensor\n"
+        "EV3_ERR_PORT|port B is a motor port; sensors are on ports 1 to 4\n";
+    char out[512];
+    size_t length;
+
+    memset(analog, 0, sizeof analog);
+    memset(uart, 0, sizeof uart);
+    /* Port 1: a touch sensor (its ID on pin 1 is 417 mV, 341 counts), pressed (pin 6 high). */
+    analog[ANALOG_CONN(0)] = 121;
+    put16(analog + ANALOG_PIN1(0), 344);
+    put16(analog + ANALOG_PIN6(0), 1800);
+    /* Port 2: a color sensor; its newest data, in slot 5, serve both modes read. */
+    analog[ANALOG_CONN(1)] = 122;
+    put_mode(uart, 1, 0, "COL-REFLECT", 29, 0, 100.0f, 100.0f);
+    put_mode(uart, 1, 4, "RGB-RAW", 29, 1, 1020.0f, 1020.0f);
+    put16(uart + UART_ACTUAL(1), 5);
+    put16(uart + UART_RAW(1, 5), 42);
+    put16(uart + UART_RAW(1, 5) + 2, 300);
+    put16(uart + UART_RAW(1, 5) + 4, 400);
+    uart[UART_STATUS(1)] = 0x08;
+    /* Port 3: an ultrasonic sensor, 1234 mm in raw units, 123.4 cm. */
+    analog[ANALOG_CONN(2)] = 122;
+    put_mode(uart, 2, 0, "US-DIST-CM", 30, 1, 2550.0f, 255.0f);
+    put16(uart + UART_ACTUAL(2), 7);
+    put16(uart + UART_RAW(2, 7), 1234);
+    uart[UART_STATUS(2)] = 0x08;
+    /* Port 4: empty. */
+    analog[ANALOG_CONN(3)] = 126;
+    write_file(analog_path, analog, sizeof analog);
+    write_file(uart_path, uart, sizeof uart);
+
+    CHECK(exited_ok(run_scenario("sensors")), "the sensors scenario should exit with 0");
+    length = read_file(out_path, (unsigned char *)out, sizeof out - 1);
+    out[length] = '\0';
+    CHECK(strcmp(out, expected) == 0, "expected\n%sgot\n%s", expected, out);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--scenario") == 0) {
@@ -562,6 +661,8 @@ int main(int argc, char **argv)
     snprintf(bak_path, sizeof bak_path, "%s/.bak", project_path);
     snprintf(out_path, sizeof out_path, "%s/out", root);
     snprintf(err_path, sizeof err_path, "%s/err", root);
+    snprintf(analog_path, sizeof analog_path, "%s/analog", root);
+    snprintf(uart_path, sizeof uart_path, "%s/uart", root);
     snprintf(run_path, sizeof run_path, "%s/run", root);
     snprintf(ret_path, sizeof ret_path, "%s/ret", run_path);
     snprintf(returned_path, sizeof returned_path, "%s/results.csv", project_path);
@@ -587,6 +688,7 @@ int main(int argc, char **argv)
     test_a_plain_call_that_fails_names_the_line_and_stops_the_program();
     test_a_try_call_returns_the_code_and_says_why();
     test_a_run_returns_when_the_motors_are_done();
+    test_sensors_are_found_and_read_from_the_shared_memory();
 
     unlink(bak_path);
     unlink(ret_path);
@@ -605,6 +707,8 @@ int main(int argc, char **argv)
     unlink(sound_path);
     unlink(out_path);
     unlink(err_path);
+    unlink(analog_path);
+    unlink(uart_path);
     rmdir(root);
 
     if (failures != 0) {

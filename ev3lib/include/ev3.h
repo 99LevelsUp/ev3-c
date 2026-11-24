@@ -5,6 +5,7 @@
  *   ev3/ev3_error.h   errors, the try and plain variants, ports
  *   ev3/ev3_core.h    start-up, exit, the run's folders, waiting
  *   ev3/ev3_motor.h   motors on ports A to D
+ *   ev3/ev3_sensor.h  sensors on ports 1 to 4
  *   ev3/ev3_ui.h      buttons, LEDs, sound
  *   ev3/ev3_return.h  files handed back to the author
  */
@@ -14,6 +15,7 @@
 #include "ev3/ev3_error.h"
 #include "ev3/ev3_core.h"
 #include "ev3/ev3_motor.h"
+#include "ev3/ev3_sensor.h"
 #include "ev3/ev3_ui.h"
 #include "ev3/ev3_return.h"
 
