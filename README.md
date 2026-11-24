@@ -20,8 +20,9 @@ bricks over USB, Bluetooth or Wi-Fi. EVƎ C itself never talks to a brick direct
 - **An MCP server**, `ev3 c mcp`, so an AI agent can build and run projects next to EVƎ Cockpit's
   own MCP tools ([docs/mcp.md](docs/mcp.md)).
 - **ev3lib**, a C library for the brick ([docs/ev3lib.md](docs/ev3lib.md)):
-  - motors: speed, power, turns by degrees, rotations or time, readings;
+  - motors: speed, power, turns by degrees, rotations or time, ramps, two motors driving together, readings;
   - the EV3 touch, color, ultrasonic, gyro and infrared sensors;
+  - the display: text in the brick's own fonts, lines, rectangles, circles and pictures;
   - buttons, LEDs and tones;
   - files returned to your computer.
 

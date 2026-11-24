@@ -124,6 +124,38 @@ ev3_motor_stop(EV3_PORT_B | EV3_PORT_C, EV3_STOP_BRAKE);
 | `ev3_sound_play_tone_volume(frequency, ms, volume)` | The same at a set volume. |
 | `ev3_sound_stop()` | Stops the sound. |
 
+## Display (`ev3/ev3_lcd.h`)
+
+The display has 178 by 128 pixels, black on white. x runs from 0 at the left to 177, y from 0 at the top to 127.
+
+```c
+ev3_lcd_clear();
+ev3_lcd_set_font(EV3_FONT_LARGE);
+ev3_lcd_draw_text(0, 0, "Hello!");
+ev3_lcd_set_font(EV3_FONT_NORMAL);
+ev3_lcd_draw_textf(0, 30, "distance: %d cm", distance);
+```
+
+| Function | What it does |
+|---|---|
+| `ev3_lcd_clear()` | Makes the display white and puts the text cursor in the top left corner. |
+| `ev3_lcd_set_font(font)` | `EV3_FONT_NORMAL` (8×9 pixels, the start), `EV3_FONT_SMALL` (8×8), `EV3_FONT_LARGE` (16×16) or `EV3_FONT_TINY` (5×7). |
+| `ev3_lcd_draw_text(x, y, text)`<br>`ev3_lcd_draw_textf(x, y, format, ...)` | Text with its top left corner at x, y; `textf` makes it as `printf()` does. Each character's cell is drawn whole, so new text covers the old. |
+| `ev3_lcd_print(format, ...)`<br>`ev3_lcd_println(format, ...)` | Text at the text cursor, like a terminal: long lines wrap, and at the bottom the display scrolls up by whole lines. `ev3_lcd_set_cursor(x, y)` moves the cursor. |
+| `ev3_lcd_draw_pixel(x, y, black)` | One pixel, black (`true`) or white (`false`). |
+| `ev3_lcd_draw_line(x1, y1, x2, y2)` | A black line. |
+| `ev3_lcd_draw_rect(x, y, w, h)`<br>`ev3_lcd_fill_rect(...)`<br>`ev3_lcd_clear_rect(...)`<br>`ev3_lcd_invert_rect(...)` | A rectangle: the outline, filled black, filled white, or black and white swapped inside it. |
+| `ev3_lcd_draw_circle(cx, cy, r)`<br>`ev3_lcd_fill_circle(cx, cy, r)` | A circle: the outline or filled black. |
+| `ev3_lcd_draw_xbm(x, y, w, h, data)` | A picture from the program: XBM data, as an image editor saves it. |
+| `ev3_lcd_draw_image(x, y, path)` | A picture file in the EV3 software's RGF format. |
+| `ev3_lcd_set_auto_update(false)`<br>`ev3_lcd_update()` | Every drawing function shows its result at once. To show a picture drawn in many steps all at once, turn that off and call `ev3_lcd_update()` when the picture is ready. |
+
+Anything drawn partly outside the display is cut off at its edge.
+
+The text uses the brick's own fonts, the ones its menus use. ev3lib does not carry them: on first use it reads them from the brick's firmware. They have the ASCII characters only, so a letter with a diacritic, such as č, shows as one `?`.
+
+While a program runs, the firmware shows a small animation. A program that draws on the display asks EVƎ C's launcher to end that animation the first time it draws, so it has the display to itself.
+
 ## Waiting and files
 
 | Function | What it does |
