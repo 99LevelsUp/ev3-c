@@ -3,6 +3,7 @@
 //! files a run returned.
 
 pub mod deploy;
+pub mod live_output;
 pub mod returned_files;
 pub mod run_control;
 pub mod run_folders;

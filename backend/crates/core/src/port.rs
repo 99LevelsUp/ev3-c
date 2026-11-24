@@ -225,8 +225,10 @@ pub trait BrickPort: BrickFileReader {
     /// Follows a file as it grows, from its start. Refused with `file_not_found` while the
     /// file does not exist yet, and with `invalid_request` when the brick has no follow free
     /// (cockpit allows two per brick, all clients together).
-    fn follow_file(&self, path: &str)
-    -> impl Future<Output = Result<FileFollow, BrickError>> + Send;
+    fn follow_file(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<FileFollow, BrickError>> + Send;
 }
 
 /// Time source, replaceable in tests so waits take no real time.

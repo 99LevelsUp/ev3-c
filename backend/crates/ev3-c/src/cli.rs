@@ -13,6 +13,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use ev3c_core::brick::deploy::deploy;
+use ev3c_core::brick::live_output::{LiveEvent, OnOutput, OutputStream};
 use ev3c_core::brick::returned_files::{
     DownloadError, ReturnedReport, download_file, download_returned_files,
 };
@@ -43,7 +44,10 @@ use crate::args::{parse_arguments, wants_events};
 use crate::cockpit::{
     BrickHandle, ClientKind, CockpitError, ConnectOptions, Connection, Connector, online_brick,
 };
-use crate::format::{format_no_result, format_returned, format_run_result, how_it_ended, iso_time};
+use crate::format::{
+    format_no_result, format_returned, format_run_result, format_run_result_shown, how_it_ended,
+    iso_time,
+};
 use crate::paths::resolve;
 
 pub const USAGE: &str = "Usage: ev3 c <command> [project folder] [options]
@@ -97,6 +101,17 @@ pub const TOOLCHAIN_SETTING_VARIABLE: &str = "EV3C_TOOLCHAIN_SETTING";
 pub trait Io {
     fn out(&mut self, text: &str);
     fn err(&mut self, text: &str);
+
+    /// A piece of the program's own stdout while it runs, written as it is: the line ends are
+    /// the program's. Writers that keep whole messages take it as one.
+    fn out_part(&mut self, text: &str) {
+        self.out(text);
+    }
+
+    /// As [`Io::out_part`], for the program's stderr.
+    fn err_part(&mut self, text: &str) {
+        self.err(text);
+    }
 }
 
 /// Replaces the Zig compile step, for tests.
@@ -597,6 +612,14 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             // The receiver lives until the run is over.
             let _ = started_sender.send(start.clone());
         };
+        // The program's output while it runs, in text and events mode. --json prints one
+        // object at the end, so it follows nothing and leaves the brick's follows to others.
+        let live = self.options.mode != Mode::Json;
+        let (output_sender, mut output) = mpsc::unbounded_channel::<LiveEvent>();
+        let on_output = move |event: LiveEvent| {
+            // The receiver lives until the run is over.
+            let _ = output_sender.send(event);
+        };
         // Copied out of `self`, so the run borrows the dependencies, not the command.
         let deps = self.deps;
         let launches = Launches::new();
@@ -610,8 +633,10 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                 launches: &launches,
                 new_launch_id: None,
                 on_started: Some(&on_started),
+                on_output: live.then_some(&on_output as &OnOutput),
             },
         ));
+        let mut open_line = OpenLine::default();
         let mut stopping = false;
         let mut stop: Option<StopFuture<'_>> = None;
         let outcome = loop {
@@ -620,6 +645,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             tokio::select! {
                 biased;
                 Some(start) = started.recv() => self.tell_started(&start, &launches),
+                Some(event) = output.recv() => self.tell_output(event, &mut open_line),
                 outcome = &mut run => break outcome,
                 () = self.interrupts.next() => {
                     if stopping {
@@ -641,6 +667,11 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         while let Ok(start) = started.try_recv() {
             self.tell_started(&start, &launches);
         }
+        // The end of the output, which the run delivers as it ends.
+        while let Ok(event) = output.try_recv() {
+            self.tell_output(event, &mut open_line);
+        }
+        open_line.close(self.io);
 
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -670,7 +701,12 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             .ending_with("noResult")),
             RunOutcome::Result { result, start } => {
                 let returned = return_files(&handle.reader, &project, dir, &result).await;
-                let mut lines = format_run_result(&project, &result);
+                // In text mode the output was shown as it came: the result does not repeat it.
+                let mut lines = if self.options.mode == Mode::Text {
+                    format_run_result_shown(&project, &result)
+                } else {
+                    format_run_result(&project, &result)
+                };
                 lines.extend(returned.iter().flat_map(format_returned));
                 Ok(report(
                     &RunJson {
@@ -997,6 +1033,35 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                 launch_id: launch.map(|(launch_id, _)| launch_id),
             },
         );
+    }
+
+    /// The program's output while it runs: written as it is in text mode, an `output` event
+    /// under --events. Live output that cannot be had is said once; the output then comes at
+    /// the end of the run through the same way.
+    fn tell_output(&mut self, event: LiveEvent, open_line: &mut OpenLine) {
+        match event {
+            LiveEvent::Output { stream, text } => {
+                if self.options.mode == Mode::Events {
+                    self.event(
+                        "output",
+                        &OutputEvent {
+                            stream: match stream {
+                                OutputStream::Out => "out",
+                                OutputStream::Err => "err",
+                            },
+                            text: &text,
+                        },
+                    );
+                    return;
+                }
+                open_line.write(self.io, stream, &text);
+            }
+            LiveEvent::Unavailable(reason) => self.notice(
+                &format!("The program's output is shown when it ends: {reason}."),
+                "outputAtEnd",
+                &OutputAtEndEvent { reason: &reason },
+            ),
+        }
     }
 
     /// The runs `EV3C_LAUNCHES` names; none when it is unset or not such an object, which only
@@ -1484,6 +1549,54 @@ struct BuiltEvent<'a> {
 #[serde(rename_all = "camelCase")]
 struct ConnectedEvent<'a> {
     brick_id: &'a str,
+}
+
+/// A piece of the program's output while it runs: `stream` is "out" or "err", `text` whole
+/// UTF-8 characters with the program's own line ends.
+#[derive(Serialize)]
+struct OutputEvent<'a> {
+    stream: &'static str,
+    text: &'a str,
+}
+
+/// The output cannot be followed while the program runs; it comes in `output` events as the
+/// run ends.
+#[derive(Serialize)]
+struct OutputAtEndEvent<'a> {
+    reason: &'a str,
+}
+
+/// Whether the program's last output on this terminal ended inside a line, per stream, so the
+/// lines EVƎ C writes after it start on a line of their own.
+#[derive(Default)]
+struct OpenLine {
+    out: bool,
+    err: bool,
+}
+
+impl OpenLine {
+    fn write(&mut self, io: &mut dyn Io, stream: OutputStream, text: &str) {
+        let open = !text.ends_with('\n');
+        match stream {
+            OutputStream::Out => {
+                io.out_part(text);
+                self.out = open;
+            }
+            OutputStream::Err => {
+                io.err_part(text);
+                self.err = open;
+            }
+        }
+    }
+
+    fn close(&mut self, io: &mut dyn Io) {
+        if std::mem::take(&mut self.out) {
+            io.out_part("\n");
+        }
+        if std::mem::take(&mut self.err) {
+            io.err_part("\n");
+        }
+    }
 }
 
 #[derive(Serialize)]

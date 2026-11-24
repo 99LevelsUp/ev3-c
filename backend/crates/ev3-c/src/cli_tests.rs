@@ -275,7 +275,9 @@ async fn run_prints_the_result_and_exits_with_the_programs_own_code() {
         text.contains("Ended: the program exited with code 3"),
         "{text}"
     );
-    assert!(text.contains("Output (stdout):\n  hello"), "{text}");
+    // The output is shown as it comes, before the result, which does not repeat it.
+    assert!(text.starts_with("hello\n--- hello, run 1 ---"), "{text}");
+    assert!(!text.contains("Output (stdout)"), "{text}");
     assert!(
         text.contains(" (PC time)"),
         "the run was started here: {text}"
@@ -797,6 +799,19 @@ fn names(events: &[Value]) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn run_json_follows_no_output_and_leaves_the_bricks_follows_to_others() {
+    let s = Setup::new();
+    script_run(&s.port(), "hello", 1, exits_with("end=program\nexit=0\n"));
+    let ran = s.cli(&["run", "hello", "--json"]).await;
+    assert_eq!(ran.code, EXIT_OK);
+    let calls = s.port().calls();
+    assert!(
+        !calls.iter().any(|call| call.starts_with("follow_file")),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
 async fn run_events_tell_the_build_the_brick_the_start_and_end_with_the_result() {
     let mut s = Setup::new();
     s.deps.compile = Some(compiler("main.c:1: warning: unused", true));
@@ -817,8 +832,18 @@ async fn run_events_tell_the_build_the_brick_the_start_and_end_with_the_result()
             "built",
             "connected",
             "started",
+            "output",
             "result"
         ]
+    );
+    let output = &events[5];
+    assert_eq!(
+        (
+            &output["stream"],
+            output["text"].as_str().unwrap_or_default().trim_end()
+        ),
+        (&json!("out"), "hello"),
+        "the program's output comes as it is: {output}"
     );
     assert!(
         ran.out[0].starts_with("{\"event\":\"building\""),
@@ -830,12 +855,16 @@ async fn run_events_tell_the_build_the_brick_the_start_and_end_with_the_result()
     assert_eq!(events[2]["artifacts"][1]["kind"], "launcher");
     assert_eq!(events[3]["brickId"], BRICK_ID);
     assert_eq!(events[4]["start"]["runSeq"], 1);
-    assert_eq!(events[5]["exitCode"], 3);
+    assert_eq!(events[6]["exitCode"], 3);
     assert_eq!(
-        events[5]["result"]["record"]["ended"],
+        events[6]["result"]["record"]["ended"],
         "the program exited with code 3"
     );
-    assert_eq!(events[5]["start"], events[4]["start"]);
+    assert_eq!(events[6]["start"], events[4]["start"]);
+    assert_eq!(
+        events[6]["result"]["out"], output["text"],
+        "the result still carries the whole output"
+    );
 }
 
 #[tokio::test]

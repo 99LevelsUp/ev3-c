@@ -157,4 +157,14 @@ impl Io for StdIo {
     fn err(&mut self, text: &str) {
         let _ = writeln!(std::io::stderr().lock(), "{text}");
     }
+
+    fn out_part(&mut self, text: &str) {
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{text}");
+        let _ = out.flush();
+    }
+
+    fn err_part(&mut self, text: &str) {
+        let _ = write!(std::io::stderr().lock(), "{text}");
+    }
 }

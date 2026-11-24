@@ -84,6 +84,19 @@ A failure prints the cockpit's error code in brackets (`[brick_busy]`), or, when
 not start, why (`[missing_binary]`). With `--json` the object is
 `{ "error": { "message", "code"?, "failure"? } }`.
 
+## The program's output during `run`
+
+`run` shows the program's stdout and stderr while the program runs: its stdout on standard
+output and its stderr on standard error, as they come, with the program's own line ends. The
+result that follows does not repeat them; it only says when an output was cut at the size limit
+or could not be read. EVƎ C follows the run's `out` and `err` files on the brick through EVƎ
+Cockpit, which allows two follows per brick for every client together. When none is free, a line
+says so, and the output comes when the program ends.
+
+With `--json`, `run` follows nothing and prints the output in its one object, so it leaves the
+brick's follows to others. With `--events`, the output comes as `output` events (below), and the
+`result` event still carries all of it.
+
 ## Ctrl+C during `run`
 
 - While building or connecting, it ends the command; nothing is started.
@@ -108,6 +121,8 @@ command ends with exactly one terminal event, the last line, which carries `exit
 | `built` | The build succeeded. | `project`, `artifacts` (as in `build --json`) |
 | `connected` | The brick is held through EVƎ Cockpit. | `brickId` |
 | `started` | `run`: the program was uploaded and started. | `start`: `outcome`, `runSeq`, `uploaded`, `skipped`; `launchId`, `startedAt` |
+| `output` | `run`: a piece of the program's output, while it runs and as it ends. | `stream`: `out` or `err`; `text`: whole UTF-8 characters, with the program's own line ends |
+| `outputAtEnd` | `run`: the output cannot be followed while the program runs; it comes in `output` events as the run ends. | `reason` |
 | `stopping` | `run`: an interrupt asked the program to stop. | |
 | `program` | `watch`: the program state of the followed brick. | `brickId`, `running`, `runSeq` |
 | `noBrick` | `watch`: no brick can be followed now. | `error`: `message`, `code`? |
@@ -135,6 +150,7 @@ For example, `ev3 c run --events`:
 {"event":"built","project":"robot","artifacts":[…]}
 {"event":"connected","brickId":"usb-0016530aaaaa"}
 {"event":"started","start":{"outcome":"started","runSeq":7,"uploaded":[…],"skipped":[…]}}
+{"event":"output","stream":"out","text":"distance: 42 cm\n"}
 {"event":"result","exitCode":0,"project":"robot","brickId":"usb-0016530aaaaa","start":{…},"result":{…}}
 ```
 

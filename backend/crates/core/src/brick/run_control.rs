@@ -11,9 +11,10 @@ use std::hash::{BuildHasher, RandomState};
 use std::pin::pin;
 use std::time::{Duration, SystemTime};
 
+use crate::brick::live_output::{LiveOutput, OnOutput};
 use crate::brick::run_folders::list_run_numbers;
 use crate::brick::run_results::{
-    Launches, RunReadError, RunResult, read_run_record, result_from_record,
+    Launches, RunReadError, RunResult, read_run_record, result_with_raw_output,
 };
 use crate::build::{BuildArtifact, brick_project_dir};
 use crate::port::{
@@ -63,6 +64,11 @@ pub struct RunProjectOptions<'a> {
     /// Called once the start returned successfully, before the wait for the run's end, so a
     /// front end can show that the program runs.
     pub on_started: Option<&'a OnStarted<'a>>,
+    /// Hears the program's output while it runs and the rest at the end (see
+    /// [`live_output`](crate::brick::live_output)). `None` follows nothing: the brick's few
+    /// follows are shared by every client, so a front end that does not show output live
+    /// leaves them free.
+    pub on_output: Option<&'a OnOutput<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +106,7 @@ pub async fn run_project(
         launches,
         new_launch_id,
         on_started,
+        on_output,
     } = options;
     let dir = brick_project_dir(project);
     let request_path = format!("{dir}/{REQUEST_FILE}");
@@ -158,41 +165,70 @@ pub async fn run_project(
         on_started(&start);
     }
     wait.started(&start);
-    wait.until_slot_stopped(port).await?;
 
-    // Runs that ended with another launch ID, or none; their records are final.
-    let mut others = HashSet::new();
-    let found = loop {
-        let attempt = find_record(
-            port,
-            reader,
-            project,
-            newest_before,
-            &launch_id,
-            &mut others,
-        );
-        // A brick error (disconnected, or a record not readable yet) means "not yet": the
-        // next poll tries again.
-        if let Ok(Some(found)) = wait.hear_during(attempt).await {
-            break Some(found);
+    let ended = async {
+        wait.until_slot_stopped(port).await?;
+        // Runs that ended with another launch ID, or none; their records are final.
+        let mut others = HashSet::new();
+        Ok::<_, BrickError>(loop {
+            let attempt = find_record(
+                port,
+                reader,
+                project,
+                newest_before,
+                &launch_id,
+                &mut others,
+            );
+            // A brick error (disconnected, or a record not readable yet) means "not yet": the
+            // next poll tries again.
+            if let Ok(Some(found)) = wait.hear_during(attempt).await {
+                break Some(found);
+            }
+            if wait.past_deadline(clock.now() + POLL_INTERVAL) {
+                break None;
+            }
+            wait.hear_during(clock.sleep(POLL_INTERVAL)).await;
+        })
+    };
+    let live = on_output.map(LiveOutput::new);
+    let found = match &live {
+        // The output is followed until the record is found; leaving the select drops the
+        // follows, so nothing arrives after `finish` below.
+        Some(live) => {
+            let follow = async {
+                live.follow(port, reader, clock, project, newest_before, &launch_id)
+                    .await;
+                std::future::pending::<()>().await;
+            };
+            tokio::select! {
+                biased;
+                found = ended => found?,
+                () = follow => unreachable!("the follow future never ends"),
+            }
         }
-        if wait.past_deadline(clock.now() + POLL_INTERVAL) {
-            break None;
-        }
-        wait.hear_during(clock.sleep(POLL_INTERVAL)).await;
+        None => ended.await?,
     };
     drop(wait);
 
     Ok(match found {
-        Some((run, record)) => RunOutcome::Result {
-            result: result_from_record(reader, project, run, record, launches, None).await,
-            start,
-        },
-        None => RunOutcome::NoResult {
-            launch_id,
-            started_at,
-            start,
-        },
+        Some((run, record)) => {
+            let (result, raw) =
+                result_with_raw_output(reader, project, run, record, launches, None).await;
+            if let Some(live) = &live {
+                live.finish(Some(&raw));
+            }
+            RunOutcome::Result { result, start }
+        }
+        None => {
+            if let Some(live) = &live {
+                live.finish(None);
+            }
+            RunOutcome::NoResult {
+                launch_id,
+                started_at,
+                start,
+            }
+        }
     })
 }
 
@@ -412,6 +448,7 @@ mod tests {
 
     use super::*;
     use crate::brick::fake::{FakeBrick, FakeBrickPort, TestClock};
+    use crate::brick::live_output::{LiveEvent, OutputStream};
     use crate::build::ArtifactKind;
     use crate::port::ProgramState;
     use crate::testutil::temp_dir;
@@ -466,10 +503,31 @@ mod tests {
                     launches: &self.launches,
                     new_launch_id: None,
                     on_started: None,
+                    on_output: None,
                 },
             );
             // Paused time jumps over the hour at once, so a run that never ends fails the
             // test instead of hanging it.
+            tokio::time::timeout(Duration::from_secs(3600), run)
+                .await
+                .expect("the run never ended")
+        }
+
+        /// A run whose output `on_output` hears.
+        async fn run_live(&self, on_output: &OnOutput<'_>) -> Result<RunOutcome, BrickError> {
+            let run = run_project(
+                &self.port,
+                &self.port,
+                &self.clock,
+                RunProjectOptions {
+                    project: "robot",
+                    artifacts: &self.artifacts,
+                    launches: &self.launches,
+                    new_launch_id: None,
+                    on_started: None,
+                    on_output: Some(on_output),
+                },
+            );
             tokio::time::timeout(Duration::from_secs(3600), run)
                 .await
                 .expect("the run never ended")
@@ -524,6 +582,168 @@ mod tests {
         run_at: Option<SystemTime>,
         request: Option<String>,
         launch_id: Option<String>,
+    }
+
+    /// What a supervisor does at start, with the launch file: takes the ID, makes run 2 with
+    /// empty outputs.
+    fn start_run_2(brick: &mut FakeBrick) -> Option<String> {
+        let launch_id = take_launch_id(brick);
+        brick.put_file(
+            &format!("{RUNS}/2/launch"),
+            format!("{}\n", launch_id.as_deref().unwrap_or_default()),
+        );
+        brick.put_file(&format!("{RUNS}/2/out"), "");
+        brick.put_file(&format!("{RUNS}/2/err"), "");
+        launch_id
+    }
+
+    /// The events heard, and each stream's text joined.
+    fn heard(events: &Mutex<Vec<LiveEvent>>) -> (Vec<LiveEvent>, String, String) {
+        let events = events.lock().unwrap().clone();
+        let joined = |wanted: OutputStream| -> String {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    LiveEvent::Output { stream, text } if *stream == wanted => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (out, err) = (joined(OutputStream::Out), joined(OutputStream::Err));
+        (events, out, err)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_run_hears_its_output_as_it_grows_once_and_in_whole_characters() {
+        let setup = setup();
+        let handle = setup.port.handle();
+        setup.on_run(move |brick| {
+            let id = start_run_2(brick);
+            let out = format!("{RUNS}/2/out");
+            let err = format!("{RUNS}/2/err");
+            let (o1, o2, o3, o4, e1) = (out.clone(), out.clone(), out.clone(), out, err);
+            handle.later(Duration::from_secs(1), move |b| b.append(&o1, "line 1\n"));
+            // "ž" is C5 BE, split between two growths.
+            handle.later(Duration::from_secs(2), move |b| {
+                b.append(&o2, b"\xC5");
+                b.append(&e1, "warn\n");
+            });
+            handle.later(Duration::from_secs(3), move |b| b.append(&o3, b"\xBE\n"));
+            // The last line is written as the program ends: the follow may not deliver it.
+            handle.later(Duration::from_secs(4), move |b| {
+                b.files.get_mut(&o4).unwrap().extend_from_slice(b"last\n");
+                put_record(b, 2, id.as_deref());
+                b.stop();
+            });
+        });
+        let events = Mutex::new(Vec::new());
+        let on_output = |event: LiveEvent| events.lock().unwrap().push(event);
+
+        let (result, _) = result(setup.run_live(&on_output).await.unwrap());
+
+        let (events, out, err) = heard(&events);
+        assert_eq!(
+            out, "line 1\nž\nlast\n",
+            "every byte once, in order: {events:?}"
+        );
+        assert_eq!(err, "warn\n");
+        assert!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    LiveEvent::Output {
+                        stream: OutputStream::Out,
+                        ..
+                    }
+                ))
+                .count()
+                >= 3,
+            "the output came in pieces while it grew: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, LiveEvent::Unavailable(_)))
+        );
+        assert_eq!(result.out.as_deref(), Some("line 1\nž\nlast\n"));
+        assert!(setup.calls().contains(&format!("follow_file {RUNS}/2/out")));
+        assert_eq!(
+            setup.port.with(|brick| brick.follow_count()),
+            0,
+            "the follows end with the run"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_free_follow_the_output_comes_whole_at_the_end_and_is_said_once() {
+        let setup = setup();
+        setup.port.with(|brick| brick.max_follows = 0);
+        let handle = setup.port.handle();
+        setup.on_run(move |brick| {
+            let id = start_run_2(brick);
+            brick.put_file(&format!("{RUNS}/2/out"), "hello\n");
+            brick.put_file(&format!("{RUNS}/2/err"), "oops\n");
+            handle.later(Duration::from_secs(2), move |b| {
+                put_record(b, 2, id.as_deref());
+                b.stop();
+            });
+        });
+        let events = Mutex::new(Vec::new());
+        let on_output = |event: LiveEvent| events.lock().unwrap().push(event);
+
+        result(setup.run_live(&on_output).await.unwrap());
+
+        let (events, out, err) = heard(&events);
+        assert_eq!((out.as_str(), err.as_str()), ("hello\n", "oops\n"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, LiveEvent::Unavailable(_)))
+                .count(),
+            1,
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_nobody_hears_live_follows_nothing() {
+        let setup = setup();
+        let handle = setup.port.handle();
+        setup.on_run(move |brick| {
+            let id = start_run_2(brick);
+            handle.later(Duration::from_secs(1), move |b| {
+                put_record(b, 2, id.as_deref());
+                b.stop();
+            });
+        });
+        result(setup.run().await.unwrap());
+        assert!(
+            !setup
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("follow_file")),
+            "{:?}",
+            setup.calls()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_run_given_up_lets_its_follows_go() {
+        let setup = setup();
+        setup.on_run(|brick| {
+            start_run_2(brick);
+        });
+        let on_output = |_: LiveEvent| {};
+        let run = setup.run_live(&on_output);
+        // The program never ends; the caller gives up after a while, as Ctrl+C twice does.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), run)
+                .await
+                .is_err()
+        );
+        assert!(setup.calls().contains(&format!("follow_file {RUNS}/2/err")));
+        assert_eq!(setup.port.with(|brick| brick.follow_count()), 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -964,6 +1184,7 @@ mod tests {
                 launches: &setup.launches,
                 new_launch_id: Some(&make),
                 on_started: Some(&on_started),
+                on_output: None,
             },
         )
         .await;
@@ -994,6 +1215,7 @@ mod tests {
                 launches: &setup.launches,
                 new_launch_id: None,
                 on_started: Some(&on_started),
+                on_output: None,
             },
         )
         .await;
@@ -1031,6 +1253,7 @@ mod tests {
                 launches: &launches,
                 new_launch_id: None,
                 on_started: None,
+                on_output: None,
             },
         );
         assert_send(&run);
