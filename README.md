@@ -65,20 +65,25 @@ program in its own process group and keeps each run's output and result in a run
 
 - An EV3 brick with the stock LEGO firmware.
 - EVƎ Cockpit, which provides the connection to the bricks.
-- VS Code 1.95 or later for the extension; Node.js 20 or later for `ev3 c` from source.
+- VS Code 1.95 or later for the extension.
 
 ## Building from source
+
+You need Rust (the toolchain `rust-toolchain.toml` names), Node.js 20 or later for the
+extension, and the system's `curl`, which downloads the compiler.
 
 ```
 npm install
 npm run build:runtime   # ev3lib and the supervisor for the brick
-npm run compile
-npm run test:ci         # compile, lint, unit tests
+npm run test:ci         # the extension: compile, lint, unit tests
 npm run test:native     # C tests, on Linux or macOS
+cd backend
+cargo build             # ev3-c, which the extension runs for every command
+cargo test
 ```
 
-The backend is moving to Rust (`backend/`, a Cargo workspace); see
-[issue #13](https://github.com/99LevelsUp/ev3-c/issues/13).
+The backend is the Rust program `ev3-c` in `backend/`. The extension is a thin TypeScript UI
+over it.
 
 ## License
 

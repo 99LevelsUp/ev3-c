@@ -7,17 +7,19 @@ extension does, so it can work on a brick while VS Code has the same brick open.
 ## Installing
 
 EVƎ Cockpit's `ev3` command runs `ev3 c …` as the add-on program `ev3-c`, which it looks for on
-PATH (on Windows, the `.cmd` shim npm installs). From this repository:
+PATH. `ev3-c` is a Rust program in `backend/`. Until it ships in packages (#13 U7), build it from
+this repository with Rust (the toolchain `rust-toolchain.toml` names) and the system's `curl`,
+which downloads the compiler:
 
 ```
-npm install
-npm run build:runtime
-npm run bundle:cli
-npm install --global .
+npm run build:runtime                 # the brick runtime: ev3lib and the supervisor
+cd backend
+cargo build --release
 ```
 
-`ev3-c` then runs from npm's global folder; `ev3 c --version` checks it. EVƎ Cockpit must be
-installed and have started its daemon once (opening VS Code with it does).
+Then put `backend/target/release` on PATH. `ev3-c` finds ev3lib's headers and the runtime in the
+repository above it. `ev3 c --version` checks it. EVƎ Cockpit must be installed and have started
+its daemon once; opening VS Code with it installed does that.
 
 ## Commands
 
@@ -90,9 +92,9 @@ In any other command, Ctrl+C ends the command with code 130.
 
 ## Events (`--events`)
 
-`--events` belongs to the Rust `ev3-c` in `backend/`, which replaces the TypeScript one
-(issue #13). With it, a program that starts `ev3 c` (EVƎ C's VS Code extension will, once per
-command) follows the command as it proceeds. Standard output carries one JSON object per line
+With `--events`, a program that starts `ev3 c` follows the command as it proceeds. EVƎ C's VS
+Code extension works this way: it runs `ev3-c` once per command, and runs `ev3-c watch` for the
+status bar. Standard output carries one JSON object per line
 and nothing else; each has `event` first. The progress events come as they happen, and each
 command ends with exactly one terminal event, the last line, which carries `exitCode`.
 
@@ -144,8 +146,9 @@ text. `--help` and `--version` print text as always.
 
 The downloaded compiler is cached per user: `%LOCALAPPDATA%\ev3-c\toolchain` on Windows,
 `~/Library/Caches/ev3-c/toolchain` on macOS, `$XDG_CACHE_HOME/ev3-c/toolchain` (or
-`~/.cache/ev3-c/toolchain`) on Linux. It is separate from the one the VS Code extension keeps.
+`~/.cache/ev3-c/toolchain`) on Linux. The VS Code extension runs `ev3-c` too, so both use the
+same cache.
 
-The Rust `ev3-c` finds EVƎ C's own files, ev3lib's headers (`ev3lib/include`) and the brick
+`ev3-c` finds EVƎ C's own files, ev3lib's headers (`ev3lib/include`) and the brick
 runtime (`out/runtime`), in the nearest folder above the program that holds both;
 `EV3C_PACKAGE_ROOT` names that folder instead.

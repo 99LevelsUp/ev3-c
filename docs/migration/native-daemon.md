@@ -5,6 +5,11 @@ is generated from JSON Schema (contract version 2). The cockpit removes the old 
 hand-written contract in one step at its switch (unit U17 of the cockpit plan), with no shim.
 This document records what EVƎ C uses today and what replaces it.
 
+> **Superseded by #13:** the TypeScript backend this document describes is gone. `src/cockpit/`
+> and the `@ev3-cockpit/client` tarball no longer exist. The VS Code extension runs the Rust
+> program `ev3-c`, which reaches the daemon through the cockpit's Rust crate `ev3-client`
+> (`backend/crates/ev3-c/src/daemon.rs`). The record below stays for its history.
+
 The reference is the cockpit's `docs/api-for-consumers.md`, section "Moving to the native daemon:
 what changes in the package", and `contract/methods.json`. The column "After the switch" there is
 planned, not confirmed.

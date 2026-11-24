@@ -7,7 +7,7 @@ This procedure proves the run contract on a real brick through EVƎ C's own comm
 1. One EV3 brick with the stock firmware, connected over USB and set as the active brick in EVƎ Cockpit. No cockpit tests may run on it at the same time.
 2. A motor on port **A**.
 3. `"ev3-cockpit.accessMode": "safe"` in the user settings (the default).
-4. In this repository: `npm install`, `npm run build:runtime`, `npm run bundle`.
+4. In this repository: `npm install`, `npm run build:runtime`, `npm run bundle`, and `cargo build` in `backend/` (the extension runs that `ev3-c`).
 5. Start VS Code with the extension from source: `code --extensionDevelopmentPath=<repo> <repo>/tests/hardware/programs/acceptance.code-workspace`. EVƎ Cockpit must be installed.
 6. Each command asks which project to use when the workspace holds several; pick the one the step names.
 
