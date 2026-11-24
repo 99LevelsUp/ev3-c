@@ -17,6 +17,9 @@ static const char *pwm_device = "/dev/lms_pwm";
 static const char *motor_device = "/dev/lms_motor";
 static const char *ui_device = "/dev/lms_ui";
 static const char *sound_device = "/dev/lms_sound";
+static const char *analog_device = "/dev/lms_analog";
+static const char *uart_device = "/dev/lms_uart";
+static const char *iic_device = "/dev/lms_iic";
 static const char *project_dir;
 static const char *run_dir;
 
@@ -48,6 +51,9 @@ void ev3_core_init(void)
     motor_device = env_or("EV3C_MOTOR_DEVICE", "/dev/lms_motor");
     ui_device = env_or("EV3C_UI_DEVICE", "/dev/lms_ui");
     sound_device = env_or("EV3C_SOUND_DEVICE", "/dev/lms_sound");
+    analog_device = env_or("EV3C_ANALOG_DEVICE", "/dev/lms_analog");
+    uart_device = env_or("EV3C_UART_DEVICE", "/dev/lms_uart");
+    iic_device = env_or("EV3C_IIC_DEVICE", "/dev/lms_iic");
     project_dir = env_or("EV3C_PROJECT_DIR", NULL);
     run_dir = env_or("EV3C_RUN_DIR", NULL);
 
@@ -102,6 +108,21 @@ const char *ev3_core_sound_device(void)
     return sound_device;
 }
 
+const char *ev3_core_analog_device(void)
+{
+    return analog_device;
+}
+
+const char *ev3_core_uart_device(void)
+{
+    return uart_device;
+}
+
+const char *ev3_core_iic_device(void)
+{
+    return iic_device;
+}
+
 int ev3_core_pwm_write(const unsigned char *command, size_t length)
 {
     return ev3_core_device_write(pwm_device, command, length);
@@ -131,7 +152,7 @@ int ev3_core_device_write(const char *device, const void *data, size_t length)
     return 0;
 }
 
-void ev3_core_sleep_ms(unsigned int ms)
+void ev3_core_sleep(unsigned int ms)
 {
     struct timespec left;
 
@@ -140,4 +161,32 @@ void ev3_core_sleep_ms(unsigned int ms)
     while (nanosleep(&left, &left) != 0 && errno == EINTR) {
         /* A signal woke us early: sleep for the rest. */
     }
+}
+
+Ev3Result ev3_try_sleep_ms(int ms)
+{
+    if (ms < 0) {
+        return ev3_fail(EV3_ERR_PARAM, "%d ms is negative", ms);
+    }
+    ev3_core_sleep((unsigned int)ms);
+    return EV3_OK;
+}
+
+Ev3Result ev3_try_sleep_sec(float seconds)
+{
+    if (!(seconds >= 0.0f) || seconds > 2000000.0f) {
+        return ev3_fail(EV3_ERR_PARAM, "%g seconds is not a time from 0 to 2000000", (double)seconds);
+    }
+    ev3_core_sleep((unsigned int)(seconds * 1000.0f + 0.5f));
+    return EV3_OK;
+}
+
+void ev3_sleep_ms_at_(EV3_AT, int ms)
+{
+    EV3_MUST("ev3_sleep_ms", ev3_try_sleep_ms(ms));
+}
+
+void ev3_sleep_sec_at_(EV3_AT, float seconds)
+{
+    EV3_MUST("ev3_sleep_sec", ev3_try_sleep_sec(seconds));
 }

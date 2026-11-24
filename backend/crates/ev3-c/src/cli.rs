@@ -32,7 +32,7 @@ use ev3c_core::port::{
     Subscription, SystemClock,
 };
 use ev3c_core::project::{PROJECT_FILE, ProjectConfig, ProjectError, load_project_config};
-use ev3c_core::results::{RunEnd, RunRecord};
+use ev3c_core::results::{RunEnd, RunRecord, library_error};
 use ev3c_core::returned::returned_dir;
 use ev3c_core::toolchain::{
     CompileRequest, CompileResult, CompilerOrigin, CompilerOverride, EnsureCompilerOptions,
@@ -1351,6 +1351,9 @@ struct ResultJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     started_at: Option<String>,
     returned: &'a [String],
+    /// When ev3lib stopped the program on a failed call: its error line, `file:line: function: why`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library_error: Option<String>,
 }
 
 fn result_json(result: &RunResult) -> ResultJson<'_> {
@@ -1361,6 +1364,7 @@ fn result_json(result: &RunResult) -> ResultJson<'_> {
         err: result.err.as_deref(),
         started_at: result.started_at.map(iso_time),
         returned: &result.returned,
+        library_error: library_error(&result.record, result.err.as_deref()),
     }
 }
 

@@ -175,10 +175,13 @@ int main(void)
     free(line);
     ev3_button_take_back();
     ev3_motor_set_power(EV3_PORT_A | EV3_PORT_B, 50);
-    while (!ev3_button_back_pressed()) {
-        ev3_core_sleep_ms(10);
+    while (!ev3_button_is_pressed(EV3_BUTTON_BACK)) {
+        ev3_sleep_ms(10);
     }
-    ev3_motor_stop(EV3_PORT_ALL, 1);
+    ev3_motor_stop(EV3_PORT_ALL, EV3_STOP_BRAKE);
+    if (ev3_motor_try_run_degrees(EV3_PORT_A, 50, 90) != EV3_OK) {
+        fprintf(stderr, "%s\n", ev3_error_message());
+    }
     ev3_button_release_back();
     ev3_core_exit();
     return 0;

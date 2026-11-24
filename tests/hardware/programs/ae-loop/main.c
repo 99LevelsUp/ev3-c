@@ -5,6 +5,6 @@ int main(void)
 {
     for (;;) {
         ev3_motor_set_power(EV3_PORT_A, 40);
-        ev3_core_sleep_ms(50);
+        ev3_sleep_ms(50);
     }
 }

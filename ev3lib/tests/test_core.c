@@ -34,6 +34,7 @@ static char sound_path[300];
 static char project_path[300];
 static char bak_path[320];
 static char out_path[300];
+static char err_path[300];
 static char run_path[300];
 static char ret_path[320];
 static char returned_path[320];
@@ -62,60 +63,78 @@ static int scenario(const char *name)
         abort();
     }
     if (strcmp(name, "motor") == 0) {
-        if (ev3_motor_set_power(EV3_PORT_A | EV3_PORT_B, 50) != 0
-            || ev3_motor_set_power(EV3_PORT_D, -150) != 0
-            || ev3_motor_stop(EV3_PORT_A, 1) != 0) {
-            return 1;
-        }
+        ev3_motor_set_power(EV3_PORT_A | EV3_PORT_B, 50);
+        ev3_motor_set_power(EV3_PORT_D, -100);
+        ev3_motor_stop(EV3_PORT_A, EV3_STOP_BRAKE);
         return 0;
     }
     if (strcmp(name, "idle") == 0) {
         return 0;
     }
     if (strcmp(name, "take-back") == 0) {
-        return ev3_button_take_back() == 0 ? 0 : 1;
+        ev3_button_take_back();
+        return 0;
     }
     if (strcmp(name, "release-back") == 0) {
-        return ev3_button_release_back() == 0 ? 0 : 1;
+        ev3_button_release_back();
+        return 0;
     }
     if (strcmp(name, "motor-more") == 0) {
-        if (ev3_motor_set_speed(EV3_PORT_A | EV3_PORT_B, 40) != 0
-            || ev3_motor_set_polarity(EV3_PORT_C, -1) != 0
-            || ev3_motor_run_degrees(EV3_PORT_A, 30, 360, 1) != 0
-            || ev3_motor_run_ms(EV3_PORT_B, -20, 1500, 0) != 0
-            || ev3_motor_reset_count(EV3_PORT_A | EV3_PORT_D) != 0) {
-            return 1;
-        }
+        ev3_motor_start(EV3_PORT_A | EV3_PORT_B, 40);
+        ev3_motor_set_polarity(EV3_PORT_C, -1);
+        ev3_motor_start_degrees(EV3_PORT_A, 30, 360);
+        ev3_motor_start_seconds(EV3_PORT_B, -20, 1.5f);
+        ev3_motor_start_degrees(EV3_PORT_C, 25, -90);
+        ev3_motor_reset_position(EV3_PORT_A | EV3_PORT_D);
         return 0;
     }
     if (strcmp(name, "motor-busy") == 0) {
-        printf("%d %d %d\n", ev3_motor_busy(EV3_PORT_B), ev3_motor_busy(EV3_PORT_A), ev3_motor_wait(EV3_PORT_A));
+        printf("%d %d %d %d %d\n", ev3_motor_is_busy(EV3_PORT_B), ev3_motor_is_busy(EV3_PORT_A),
+               ev3_motor_wait(EV3_PORT_A, 0), ev3_motor_wait(EV3_PORT_B, 30),
+               ev3_motor_try_wait(EV3_PORT_B, 30) == EV3_ERR_TIMEOUT);
         return 0;
     }
     if (strcmp(name, "motor-read") == 0) {
-        int speed = 0, degrees = 0;
-        int ok = ev3_motor_read(EV3_PORT_C, &speed, &degrees);
-        errno = 0;
-        printf("%d %d %d %d\n", ok, speed, degrees, ev3_motor_read(EV3_PORT_A | EV3_PORT_B, &speed, &degrees) == -1 && errno == EINVAL);
+        int degrees = 0;
+        printf("%d %d %d\n", ev3_motor_get_speed(EV3_PORT_C), ev3_motor_get_position(EV3_PORT_C),
+               ev3_motor_try_get_position(EV3_PORT_A | EV3_PORT_B, &degrees) == EV3_ERR_PORT);
         return 0;
     }
     if (strcmp(name, "buttons") == 0) {
-        errno = 0;
-        printf("%d %d %d %d\n", ev3_button_pressed(EV3_BUTTON_UP), ev3_button_pressed(EV3_BUTTON_ENTER),
-               ev3_button_pressed(EV3_BUTTON_LEFT), ev3_button_pressed(9) == -1 && errno == EINVAL);
+        bool pressed = false;
+        printf("%d %d %d %d %d\n", ev3_button_is_pressed(EV3_BUTTON_UP), ev3_button_is_pressed(EV3_BUTTON_ENTER),
+               ev3_button_is_pressed(EV3_BUTTON_LEFT), ev3_button_is_pressed(EV3_BUTTON_ANY),
+               ev3_button_try_is_pressed((Ev3Button)0x40, &pressed) == EV3_ERR_PARAM);
         return 0;
     }
     if (strcmp(name, "led") == 0) {
-        errno = 0;
-        if (ev3_led_set(EV3_LED_RED_FLASH) != 0 || ev3_led_set(10) != -1 || errno != EINVAL) {
-            return 1;
-        }
-        return 0;
+        ev3_led_set(EV3_LED_RED_FLASH);
+        return ev3_led_try_set((Ev3LedPattern)10) == EV3_ERR_PARAM ? 0 : 1;
     }
     if (strcmp(name, "sound") == 0) {
-        if (ev3_sound_tone(50, 440, 200) != 0 || ev3_sound_tone(150, 70000, 0) != 0 || ev3_sound_stop() != 0) {
-            return 1;
-        }
+        ev3_sound_play_tone_volume(440, 200, 70);
+        ev3_sound_play_tone(1000, 0);
+        ev3_sound_stop();
+        return ev3_sound_try_play_tone(70000, 10) == EV3_ERR_PARAM ? 0 : 1;
+    }
+    if (strcmp(name, "plain-error") == 0) {
+        /* A sensor port given to a motor: the plain variant names the line and stops. */
+        ev3_motor_start(EV3_PORT_1, 50);
+        printf("not reached\n");
+        return 0;
+    }
+    if (strcmp(name, "try-error") == 0) {
+        Ev3Result result = ev3_motor_try_start(EV3_PORT_A, 150);
+        printf("%s|%s\n", ev3_error_string(result), ev3_error_message());
+        result = ev3_motor_try_stop(EV3_PORT_A | EV3_PORT_2, EV3_STOP_COAST);
+        printf("%s|%s\n", ev3_error_string(result), ev3_error_message());
+        return 0;
+    }
+    if (strcmp(name, "run-blocking") == 0) {
+        /* The fake motor device reports nothing busy, so the run returns after its command. */
+        ev3_motor_run_degrees(EV3_PORT_B, 50, 180);
+        ev3_motor_run_rotations(EV3_PORT_B, -50, 0.5f);
+        ev3_motor_run_seconds(EV3_PORT_B, 10, 0.25f);
         return 0;
     }
     if (strcmp(name, "return-files") == 0) {
@@ -128,9 +147,10 @@ static int scenario(const char *name)
         }
         snprintf(other, sizeof other, "%s/other.txt", project);
         f = fopen(other, "w");
-        if (f == NULL || fclose(f) != 0 || ev3_return_file(other) != 0) {
+        if (f == NULL || fclose(f) != 0) {
             return 2;
         }
+        ev3_return_file(other);
         /* A relative path is taken from the current folder and recorded in full. */
         if (chdir(project) != 0 || (f = ev3_return_fopen("relative.txt", "w")) == NULL || fclose(f) != 0) {
             return 3;
@@ -139,13 +159,13 @@ static int scenario(const char *name)
     }
     if (strcmp(name, "return-refused") == 0) {
         char missing[400];
+        FILE *f = NULL;
         snprintf(missing, sizeof missing, "%s/missing.txt", getenv("EV3C_PROJECT_DIR"));
-        errno = 0;
-        if (ev3_return_file(missing) != -1 || errno != ENOENT) {
+        if (ev3_return_try_file(missing) != EV3_ERR_IO) {
             return 1;
         }
-        errno = 0;
-        if (ev3_return_fopen("bad\nname.txt", "w") != NULL || errno != EINVAL || access("bad\nname.txt", F_OK) == 0) {
+        if (ev3_return_try_fopen("bad\nname.txt", "w", &f) != EV3_ERR_PARAM || f != NULL
+            || access("bad\nname.txt", F_OK) == 0) {
             return 2;
         }
         return 0;
@@ -156,7 +176,7 @@ static int scenario(const char *name)
         return f != NULL && fclose(f) == 0 ? 0 : 1;
     }
     if (strcmp(name, "back-state") == 0) {
-        printf("%d\n", ev3_button_back_pressed());
+        printf("%d\n", ev3_button_is_pressed(EV3_BUTTON_BACK));
         return 0;
     }
     fprintf(stderr, "unknown scenario %s\n", name);
@@ -189,10 +209,12 @@ static int run_scenario_in(const char *name, int in_run)
     child = fork();
     if (child == 0) {
         int out = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (out < 0 || dup2(out, STDOUT_FILENO) < 0) {
+        int err = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (out < 0 || err < 0 || dup2(out, STDOUT_FILENO) < 0 || dup2(err, STDERR_FILENO) < 0) {
             _exit(127);
         }
         close(out);
+        close(err);
         execve(self, argv, envp);
         _exit(127);
     }
@@ -274,7 +296,7 @@ static void test_motor_power_and_stop_write_firmware_commands(void)
     static const unsigned char expected[] = {
         0xA4, 0x03, 50,   /* power 50 on A and B */
         0xA6, 0x03,       /* start A and B */
-        0xA4, 0x08, 0x9C, /* power -150 limited to -100 on D */
+        0xA4, 0x08, 0x9C, /* power -100 on D */
         0xA6, 0x08,       /* start D */
         0xA3, 0x01, 0x01, /* stop A with brake */
         0x02,             /* stop all motors when main() returns */
@@ -340,8 +362,9 @@ static void test_regulated_and_measured_motor_commands(void)
         0xA6, 0x03,                             /* start A and B */
         0xA7, 0x04, 0xFF,                       /* reverse C */
         0xAE, 0x01, 30, 0, 0, 0, 0, 0, 0x68, 0x01, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,    /* A: 360 degrees at 30, brake */
-        0xAF, 0x02, 0xEC, 0, 0, 0, 0, 0, 0xDC, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  /* B: 1500 ms at -20, coast */
-        0xB2, 0x09,                             /* clear the counts of A and D */
+        0xAF, 0x02, 0xEC, 0, 0, 0, 0, 0, 0xDC, 0x05, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,  /* B: 1500 ms at -20, brake */
+        0xAE, 0x04, 0xE7, 0, 0, 0, 0, 0, 0x5A, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,     /* C: -90 degrees is 90 at -25 */
+        0xB2, 0x09,                             /* clear the positions of A and D */
         0x02,                                   /* stop all motors when main() returns */
     };
     unsigned char actual[128];
@@ -362,7 +385,8 @@ static void test_motor_state_reads_the_test_flags(void)
     write_file(pwm_path, "3 2 ", 4);
     CHECK(exited_ok(run_scenario("motor-busy")), "the motor-busy scenario should exit with 0");
     length = read_file(out_path, out, sizeof out);
-    CHECK(length == 6 && memcmp(out, "1 0 0\n", 6) == 0, "B busy, A idle, waiting for A returns at once; got \"%.*s\"", (int)length, (const char *)out);
+    CHECK(length == 10 && memcmp(out, "1 0 1 0 1\n", 10) == 0,
+          "B busy, A idle, waiting for A is done at once, waiting 30 ms for B runs out; got \"%.*s\"", (int)length, (const char *)out);
 }
 
 static void test_motor_read_takes_speed_and_degrees_from_the_shared_motor_data(void)
@@ -379,7 +403,8 @@ static void test_motor_read_takes_speed_and_degrees_from_the_shared_motor_data(v
     write_file(motor_path, motors, sizeof motors);
     CHECK(exited_ok(run_scenario("motor-read")), "the motor-read scenario should exit with 0");
     length = read_file(out_path, out, sizeof out);
-    CHECK(length == 12 && memcmp(out, "0 -25 720 1\n", 12) == 0, "port C reads speed -25 and 720 degrees; got \"%.*s\"", (int)length, (const char *)out);
+    CHECK(length == 10 && memcmp(out, "-25 720 1\n", 10) == 0,
+          "port C reads speed -25 and 720 degrees, and two ports are refused; got \"%.*s\"", (int)length, (const char *)out);
 }
 
 static void test_every_button_reads_from_the_button_device(void)
@@ -391,7 +416,8 @@ static void test_every_button_reads_from_the_button_device(void)
     write_file(ui_path, enter_down, sizeof enter_down);
     CHECK(exited_ok(run_scenario("buttons")), "the buttons scenario should exit with 0");
     length = read_file(out_path, out, sizeof out);
-    CHECK(length == 8 && memcmp(out, "0 1 0 1\n", 8) == 0, "only Enter is down, and button 9 does not exist; got \"%.*s\"", (int)length, (const char *)out);
+    CHECK(length == 10 && memcmp(out, "0 1 0 1 1\n", 10) == 0,
+          "only Enter is down, any button is, and 0x40 names none; got \"%.*s\"", (int)length, (const char *)out);
 }
 
 static void test_led_pattern_is_written_as_the_firmware_reads_it(void)
@@ -411,8 +437,8 @@ static void test_tones_are_written_as_the_sound_driver_reads_them(void)
 {
     /* d_sound.c: TONE (1), volume, frequency and duration as 16-bit little-endian; BREAK (0) stops. */
     static const unsigned char expected[] = {
-        0x01, 50, 0xB8, 0x01, 0xC8, 0x00,       /* 440 Hz, 200 ms, volume 50 */
-        0x01, 100, 0xFF, 0xFF, 0x00, 0x00,      /* volume and frequency limited; 0 ms sounds until stopped */
+        0x01, 70, 0xB8, 0x01, 0xC8, 0x00,       /* 440 Hz, 200 ms, volume 70 */
+        0x01, 50, 0xE8, 0x03, 0x00, 0x00,       /* 1000 Hz at the default volume; 0 ms sounds until stopped */
         0x00,                                   /* stop */
     };
     unsigned char actual[32];
@@ -458,6 +484,63 @@ static void test_return_outside_a_run_opens_the_file_and_records_nothing(void)
     unlink(returned_path);
 }
 
+static void test_a_plain_call_that_fails_names_the_line_and_stops_the_program(void)
+{
+    static const unsigned char stop_all[] = { 0x02 };
+    char err[512];
+    unsigned char pwm[16];
+    size_t length;
+    int status;
+
+    write_file(pwm_path, "", 0);
+    status = run_scenario("plain-error");
+    CHECK(status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == EV3_EXIT_LIBRARY_ERROR,
+          "the program should end with exit code %d (status %d)", EV3_EXIT_LIBRARY_ERROR, status);
+    length = read_file(err_path, (unsigned char *)err, sizeof err - 1);
+    err[length] = '\0';
+    CHECK(strstr(err, "test_core.c:") != NULL
+              && strstr(err, ": ev3_motor_start: port 1 is a sensor port; motors are on ports A to D\n"
+                             EV3_LIBRARY_STOP_LINE "\n") != NULL,
+          "stderr should name the file, line, function and what went wrong; got\n%s", err);
+    length = read_file(out_path, pwm, sizeof pwm);
+    CHECK(length == 0, "nothing after the failed call should run");
+    length = read_file(pwm_path, pwm, sizeof pwm);
+    CHECK(bytes_equal(stop_all, sizeof stop_all, pwm, length), "the stop should still stop every motor, and nothing else reach the motors");
+}
+
+static void test_a_try_call_returns_the_code_and_says_why(void)
+{
+    static const char expected[] =
+        "EV3_ERR_PARAM|speed 150 is outside -100 to 100\n"
+        "EV3_ERR_PORT|port 0x201 is a sensor port; motors are on ports A to D\n";
+    char out[256];
+    size_t length;
+
+    write_file(pwm_path, "", 0);
+    CHECK(exited_ok(run_scenario("try-error")), "the try-error scenario should exit with 0");
+    length = read_file(out_path, (unsigned char *)out, sizeof out - 1);
+    out[length] = '\0';
+    CHECK(strcmp(out, expected) == 0, "expected\n%sgot\n%s", expected, out);
+}
+
+static void test_a_run_returns_when_the_motors_are_done(void)
+{
+    static const unsigned char expected[] = {
+        0xAE, 0x02, 50, 0, 0, 0, 0, 0, 0xB4, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,          /* 180 degrees at 50 */
+        0xAE, 0x02, 0xCE, 0, 0, 0, 0, 0, 0xB4, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,        /* half a turn at -50 */
+        0xAF, 0x02, 10, 0, 0, 0, 0, 0, 0xFA, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,          /* 250 ms at 10 */
+        0x02,
+    };
+    unsigned char actual[128];
+    size_t length;
+
+    /* The fake device reads as "nothing ready, nothing busy", then the commands written after it. */
+    write_file(pwm_path, "0 0 ", 4);
+    CHECK(exited_ok(run_scenario("run-blocking")), "the run-blocking scenario should exit with 0");
+    length = read_file(pwm_path, actual, sizeof actual);
+    CHECK(length > 4 && bytes_equal(expected, sizeof expected, actual + 4, length - 4), "motor device received other bytes");
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--scenario") == 0) {
@@ -478,6 +561,7 @@ int main(int argc, char **argv)
     snprintf(project_path, sizeof project_path, "%s/project", root);
     snprintf(bak_path, sizeof bak_path, "%s/.bak", project_path);
     snprintf(out_path, sizeof out_path, "%s/out", root);
+    snprintf(err_path, sizeof err_path, "%s/err", root);
     snprintf(run_path, sizeof run_path, "%s/run", root);
     snprintf(ret_path, sizeof ret_path, "%s/ret", run_path);
     snprintf(returned_path, sizeof returned_path, "%s/results.csv", project_path);
@@ -500,6 +584,9 @@ int main(int argc, char **argv)
     test_returned_files_are_listed_in_the_run_folder();
     test_return_refuses_a_missing_file_and_a_line_break();
     test_return_outside_a_run_opens_the_file_and_records_nothing();
+    test_a_plain_call_that_fails_names_the_line_and_stops_the_program();
+    test_a_try_call_returns_the_code_and_says_why();
+    test_a_run_returns_when_the_motors_are_done();
 
     unlink(bak_path);
     unlink(ret_path);
@@ -517,6 +604,7 @@ int main(int argc, char **argv)
     unlink(motor_path);
     unlink(sound_path);
     unlink(out_path);
+    unlink(err_path);
     rmdir(root);
 
     if (failures != 0) {

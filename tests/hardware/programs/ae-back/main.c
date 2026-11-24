@@ -8,23 +8,19 @@
 
 int main(void)
 {
-    int was_pressed = 0;
-    int motor_on = 0;
+    bool motor_on = false;
 
     ev3_button_take_back();
     printf("Back taken over: a short press toggles motor A, holding Back stops the program\n");
     for (;;) {
-        int pressed = ev3_button_back_pressed();
-        if (pressed && !was_pressed) {
-            motor_on = !motor_on;
-            if (motor_on) {
-                ev3_motor_set_power(EV3_PORT_A, 40);
-            } else {
-                ev3_motor_stop(EV3_PORT_A, 1);
-            }
-            printf("Back pressed, motor %s\n", motor_on ? "on" : "off");
+        ev3_button_wait_press(EV3_BUTTON_BACK, 0);
+        motor_on = !motor_on;
+        if (motor_on) {
+            ev3_motor_set_power(EV3_PORT_A, 40);
+        } else {
+            ev3_motor_stop(EV3_PORT_A, EV3_STOP_BRAKE);
         }
-        was_pressed = pressed;
-        ev3_core_sleep_ms(20);
+        printf("Back pressed, motor %s\n", motor_on ? "on" : "off");
+        ev3_button_wait_release(EV3_BUTTON_BACK);
     }
 }

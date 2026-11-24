@@ -6,20 +6,25 @@
  *   - lms2012/source/bytecodes.h:1354-1363: the patterns, LED_BLACK (0)
  *     through LED_ORANGE_PULSE (9), which EV3_LED_* follow.
  */
-#include <errno.h>
-
 #include "ev3.h"
 #include "ev3_core_internal.h"
 
-int ev3_led_set(int pattern)
+Ev3Result ev3_led_try_set(Ev3LedPattern pattern)
 {
     char command[2];
 
-    if (pattern < EV3_LED_OFF || pattern > EV3_LED_ORANGE_PULSE) {
-        errno = EINVAL;
-        return -1;
+    if ((int)pattern < EV3_LED_OFF || (int)pattern > EV3_LED_ORANGE_PULSE) {
+        return ev3_fail(EV3_ERR_PARAM, "LED pattern %d is not one of EV3_LED_OFF to EV3_LED_ORANGE_PULSE", (int)pattern);
     }
-    command[0] = (char)('0' + pattern);
+    command[0] = (char)('0' + (int)pattern);
     command[1] = '\0';
-    return ev3_core_device_write(ev3_core_ui_device(), command, sizeof command);
+    if (ev3_core_device_write(ev3_core_ui_device(), command, sizeof command) != 0) {
+        return ev3_fail_errno(EV3_ERR_IO, "the LED device cannot be written");
+    }
+    return EV3_OK;
+}
+
+void ev3_led_set_at_(EV3_AT, Ev3LedPattern pattern)
+{
+    EV3_MUST("ev3_led_set", ev3_led_try_set(pattern));
 }

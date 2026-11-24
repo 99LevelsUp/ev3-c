@@ -9,6 +9,6 @@ int main(void)
 
     ev3_motor_set_power(EV3_PORT_A, 40);
     printf("motor A started, crashing in 2 s\n");
-    ev3_core_sleep_ms(2000);
+    ev3_sleep_ms(2000);
     return *nowhere;
 }

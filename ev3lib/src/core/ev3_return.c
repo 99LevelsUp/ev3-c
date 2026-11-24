@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "ev3.h"
+#include "ev3_core_internal.h"
 
 #define RETURN_LIST "ret"
 
@@ -86,34 +87,67 @@ static int record(const char *path)
     return 0;
 }
 
-FILE *ev3_return_fopen(const char *path, const char *mode)
+static Ev3Result check_path(const char *path)
+{
+    if (path == NULL) {
+        return ev3_fail(EV3_ERR_PARAM, "the path points nowhere (NULL)");
+    }
+    if (has_line_break(path)) {
+        return ev3_fail(EV3_ERR_PARAM, "the path \"%s\" contains a line break", path);
+    }
+    return EV3_OK;
+}
+
+Ev3Result ev3_return_try_fopen(const char *path, const char *mode, FILE **opened)
 {
     FILE *file;
-    int saved;
+    Ev3Result result = check_path(path);
 
-    if (has_line_break(path)) {
-        errno = EINVAL;
-        return NULL;
+    if (result == EV3_OK && (mode == NULL || opened == NULL)) {
+        result = ev3_fail(EV3_ERR_PARAM, "the mode or the file points nowhere (NULL)");
+    }
+    if (result != EV3_OK) {
+        return result;
     }
     file = fopen(path, mode);
-    if (file == NULL || ev3_core_run_dir() == NULL) {
-        return file;
+    if (file == NULL) {
+        return ev3_fail(EV3_ERR_IO, "%s cannot be opened: %s", path, strerror(errno));
+    }
+    if (ev3_core_run_dir() != NULL && record(path) != 0) {
+        /* Marked for return but not on the list: say so rather than lose it in silence. */
+        int saved = errno;
+        fclose(file);
+        return ev3_fail(EV3_ERR_IO, "%s cannot be marked for return: %s", path, strerror(saved));
+    }
+    *opened = file;
+    return EV3_OK;
+}
+
+Ev3Result ev3_return_try_file(const char *path)
+{
+    Ev3Result result = check_path(path);
+
+    if (result != EV3_OK) {
+        return result;
+    }
+    if (ev3_core_run_dir() == NULL) {
+        return ev3_fail(EV3_ERR_NOT_SUPPORTED,
+                        "files can be returned only from a run started by EVƎ C (EV3C_RUN_DIR is not set)");
     }
     if (record(path) != 0) {
-        /* Marked for return but not on the list: say so rather than lose it in silence. */
-        saved = errno;
-        fclose(file);
-        errno = saved;
-        return NULL;
+        return ev3_fail(EV3_ERR_IO, "%s cannot be marked for return: %s", path, strerror(errno));
     }
+    return EV3_OK;
+}
+
+FILE *ev3_return_fopen_at_(EV3_AT, const char *path, const char *mode)
+{
+    FILE *file = NULL;
+    EV3_MUST("ev3_return_fopen", ev3_return_try_fopen(path, mode, &file));
     return file;
 }
 
-int ev3_return_file(const char *path)
+void ev3_return_file_at_(EV3_AT, const char *path)
 {
-    if (has_line_break(path)) {
-        errno = EINVAL;
-        return -1;
-    }
-    return record(path);
+    EV3_MUST("ev3_return_file", ev3_return_try_file(path));
 }

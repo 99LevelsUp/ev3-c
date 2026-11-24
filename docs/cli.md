@@ -74,6 +74,7 @@ extension uses it to connect as `EVƎ C (VS Code)`. `EV3C_TOOLCHAIN_SETTING` nam
 |---|---|
 | 0 | Done; for `run`, the program exited with 0. |
 | the program's code | `run`: the program exited with it (capped at 255). |
+| 70 | `run`: also when ev3lib stopped the program because a plain call failed. The result then says so, and `result.libraryError` holds ev3lib's line, `file:line: function: what went wrong`. |
 | 128 + n | `run`: the program was ended by signal n (a crash with signal 11 gives 139). |
 | 130 | `run`: the program was stopped (Stop, Back, Ctrl+C), or the command was interrupted. |
 | 1 | Something failed: the build, the cockpit, the brick, or no result was recorded. |

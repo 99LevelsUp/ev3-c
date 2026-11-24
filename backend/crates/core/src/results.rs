@@ -109,9 +109,65 @@ fn integer(value: Option<&str>) -> Option<i64> {
     value.parse().ok()
 }
 
+/// The exit code ev3lib ends a program with when a plain call failed
+/// (`EV3_EXIT_LIBRARY_ERROR` in ev3lib's `ev3_error.h`).
+pub const LIBRARY_ERROR_EXIT: i64 = 70;
+
+/// The line ev3lib writes to stderr after the error when it stops a program
+/// (`EV3_LIBRARY_STOP_LINE`).
+pub const LIBRARY_STOP_LINE: &str = "ev3lib stopped the program because of this error.";
+
+/// The error that made ev3lib stop the program, such as
+/// `main.c:12: ev3_motor_start: port 1 is a sensor port; motors are on ports A to D`: the line
+/// before ev3lib's stop line at the end of stderr, when the program exited with ev3lib's code.
+/// A program that only returns 70 itself, or whose stderr was cut at the cap, has none.
+pub fn library_error(record: &RunRecord, err: Option<&str>) -> Option<String> {
+    if record.end != RunEnd::Program
+        || record.signal.is_some()
+        || record.exit != Some(LIBRARY_ERROR_EXIT)
+        || record.err_truncated
+    {
+        return None;
+    }
+    let mut lines = err?
+        .lines()
+        .rev()
+        .map(str::trim_end)
+        .skip_while(|line| line.is_empty());
+    if lines.next()? != LIBRARY_STOP_LINE {
+        return None;
+    }
+    lines
+        .next()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ev3libs_stop_is_told_by_its_exit_code_and_its_last_line() {
+        let record =
+            parse_run_record("run=3\nend=program\nexit=70\nout_truncated=0\nerr_truncated=0\n")
+                .unwrap();
+        let err = "warming up\nmain.c:12: ev3_motor_start: port 1 is a sensor port; motors are on ports A to D\nev3lib stopped the program because of this error.\n";
+        assert_eq!(
+            library_error(&record, Some(err)).as_deref(),
+            Some("main.c:12: ev3_motor_start: port 1 is a sensor port; motors are on ports A to D")
+        );
+        assert_eq!(
+            library_error(&record, Some("exit 70 of its own\n")),
+            None,
+            "a program that returns 70 itself"
+        );
+        let other =
+            parse_run_record("run=3\nend=program\nexit=1\nout_truncated=0\nerr_truncated=0\n")
+                .unwrap();
+        assert_eq!(library_error(&other, Some(err)), None, "another exit code");
+        assert_eq!(library_error(&record, None), None, "no stderr read");
+    }
 
     #[test]
     fn a_completion_record_with_an_exit_code_and_a_launch_id_is_parsed() {

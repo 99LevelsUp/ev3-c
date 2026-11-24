@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ev3c_core::brick::returned_files::ReturnedReport;
 use ev3c_core::brick::run_results::RunResult;
-use ev3c_core::results::{RunEnd, RunRecord};
+use ev3c_core::results::{RunEnd, RunRecord, library_error};
 
 /// How a run ended, in one phrase.
 pub fn how_it_ended(record: &RunRecord) -> String {
@@ -40,7 +40,13 @@ pub fn format_run_result(project: &str, result: &RunResult) -> Vec<String> {
     let mut lines = vec![
         format!("--- {project}, run {} ---", result.run),
         format!("Started: {}", started_text(result.started_at)),
-        format!("Ended: {}", how_it_ended(record)),
+        format!(
+            "Ended: {}",
+            match library_error(record, result.err.as_deref()) {
+                Some(error) => format!("ev3lib stopped the program: {error}"),
+                None => how_it_ended(record),
+            }
+        ),
     ];
     lines.extend(stream(
         "Output (stdout)",
