@@ -209,6 +209,20 @@ static int scenario(const char *name)
                ev3_lcd_try_fill_rect(0, 0, -1, 2) == EV3_ERR_PARAM, ev3_lcd_try_set_cursor(178, 0) == EV3_ERR_PARAM);
         return 0;
     }
+    if (strcmp(name, "lcd-shapes") == 0) {
+        /* A drawing that never ends is killed by the alarm and fails the test. */
+        alarm(5);
+        ev3_lcd_set_auto_update(false);
+        ev3_lcd_draw_line(0, 0, EV3_LCD_WIDTH - 1, EV3_LCD_HEIGHT - 1); /* shallow */
+        ev3_lcd_draw_line(170, 120, 160, 0);                          /* steep, backwards */
+        ev3_lcd_draw_line(5, 100, 50, 100);                           /* flat */
+        ev3_lcd_draw_circle(45, 64, 30);
+        ev3_lcd_fill_circle(130, 40, 18);
+        ev3_lcd_draw_rect(100, 2, 20, 20);
+        ev3_lcd_invert_rect(90, 90, 80, 10);
+        ev3_lcd_update();
+        return 0;
+    }
     if (strcmp(name, "lcd-no-fonts") == 0) {
         Ev3Result result = ev3_lcd_try_draw_text(0, 0, "x");
         printf("%s|%s\n", ev3_error_string(result), ev3_error_message());
@@ -796,6 +810,19 @@ static void test_the_display_draws_with_the_firmware_fonts_into_the_framebuffer(
           (const char *)out);
     /* No launcher answers in the test, so the request for the screen stays behind. */
     CHECK(stat(lcd_marker, &st) == 0, "the program asks for the screen with .lcd in its project folder");
+    unlink(lcd_marker);
+
+    /* Shapes end, and land where they should: a line's ends, a circle's rightmost point. */
+    write_file(lcd_path, "", 0);
+    CHECK(exited_ok(run_scenario("lcd-shapes")), "the lcd-shapes scenario should end within 5 s and exit with 0");
+    length = read_file(lcd_path, actual, sizeof actual);
+    CHECK(length == 60 * 128, "the framebuffer is 60 by 128 bytes, got %zu", length);
+    if (length == 60 * 128) {
+        CHECK((actual[127 * 60 + 177 / 3] & 0xE0 >> 3 * (177 % 3)) != 0, "the diagonal reaches 177, 127");
+        CHECK((actual[0 * 60 + 160 / 3] & 0xE0 >> 3 * (160 % 3)) != 0, "the steep line reaches 160, 0");
+        CHECK((actual[64 * 60 + 75 / 3] & 0xE0 >> 3 * (75 % 3)) != 0, "the circle passes 75, 64");
+        CHECK((actual[95 * 60 + 85 / 3] & 0xE0 >> 3 * (85 % 3)) == 0, "outside the shapes stays white");
+    }
     unlink(lcd_marker);
 
     unlink(ui_library_path);

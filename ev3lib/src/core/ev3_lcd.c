@@ -589,15 +589,18 @@ Ev3Result ev3_lcd_try_draw_line(int x1, int y1, int x2, int y2)
     sx = x1 < x2 ? 1 : -1, sy = y1 < y2 ? 1 : -1;
     error = dx + dy;
     for (;;) {
+        /* Both steps test the error from before either step; testing it after the first never ends. */
+        int doubled = 2 * error;
+
         put(x1, y1, 1);
         if (x1 == x2 && y1 == y2) {
             break;
         }
-        if (2 * error >= dy) {
+        if (doubled >= dy) {
             error += dy;
             x1 += sx;
         }
-        if (2 * error <= dx) {
+        if (doubled <= dx) {
             error += dx;
             y1 += sy;
         }
