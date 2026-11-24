@@ -74,6 +74,36 @@ impl Subscription {
     }
 }
 
+/// What a followed brick file says next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FollowEvent {
+    /// The bytes the file grew by, from `offset` on, each growth starting where the last one
+    /// ended. Bytes, not text: a character may be split between two.
+    Appended { offset: u64, data: Vec<u8> },
+    /// The follow ended without being dropped (the file was removed or replaced, the brick
+    /// signed out, or the follow failed); the reason in cockpit's words. Nothing follows.
+    Ended(String),
+}
+
+/// A brick file followed as it grows, from [`BrickPort::follow_file`]. Dropping it cancels the
+/// follow, which frees one of the brick's few follows for another client.
+#[derive(Debug)]
+pub struct FileFollow {
+    events: mpsc::UnboundedReceiver<FollowEvent>,
+}
+
+impl FileFollow {
+    /// A follow fed by the sending half of `events`, as [`Subscription::new`].
+    pub fn new(events: mpsc::UnboundedReceiver<FollowEvent>) -> Self {
+        FileFollow { events }
+    }
+
+    /// The next growth or the end; `None` once the port has dropped its sending half.
+    pub async fn next(&mut self) -> Option<FollowEvent> {
+        self.events.recv().await
+    }
+}
+
 /// File content to put on the brick: a file on this computer, or a few bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileSource {
@@ -191,6 +221,12 @@ pub trait BrickPort: BrickFileReader {
 
     /// Follows the brick's program state; returns once the subscription is live.
     fn subscribe(&self) -> impl Future<Output = Result<Subscription, BrickError>> + Send;
+
+    /// Follows a file as it grows, from its start. Refused with `file_not_found` while the
+    /// file does not exist yet, and with `invalid_request` when the brick has no follow free
+    /// (cockpit allows two per brick, all clients together).
+    fn follow_file(&self, path: &str)
+    -> impl Future<Output = Result<FileFollow, BrickError>> + Send;
 }
 
 /// Time source, replaceable in tests so waits take no real time.

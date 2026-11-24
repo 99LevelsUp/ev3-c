@@ -23,12 +23,13 @@ use ev3_client::contract::{
     ProgramsStatusParams, StartOutcome as ContractOutcome,
 };
 use ev3_client::{
-    ClientError, Cockpit, CockpitEvent, CockpitOptions, CockpitPrograms, Launch, Paths, method,
-    user_paths,
+    ClientError, Cockpit, CockpitEvent, CockpitOptions, CockpitPrograms, FileEvent, Launch, Paths,
+    method, user_paths,
 };
 use ev3c_core::port::{
     BrickEntry, BrickError, BrickEvent, BrickFileReader, BrickPort, DeployItem, EntryKind,
-    FileSource, ProgramState, RemoveReport, StartOutcome, StartReport, Subscription,
+    FileFollow, FileSource, FollowEvent, ProgramState, RemoveReport, StartOutcome, StartReport,
+    Subscription,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -512,6 +513,41 @@ impl BrickPort for CockpitPort {
             // `programs` goes with the task, which cancels the subscription on the daemon.
         });
         Ok(Subscription::new(receiver))
+    }
+
+    /// The cockpit's `files/follow` from the file's start. The cockpit follows again from the
+    /// offset reached after a daemon replacement. The [`CockpitFile`](ev3_client::CockpitFile)
+    /// lives in a task that ends as soon as the [`FileFollow`] is dropped, which cancels the
+    /// follow on the daemon and frees one of the brick's two follows.
+    async fn follow_file(&self, path: &str) -> Result<FileFollow, BrickError> {
+        let mut file = self
+            .cockpit
+            .follow_file(&self.brick_id, path, None)
+            .await
+            .map_err(brick_error)?;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let event = tokio::select! {
+                    () = sender.closed() => break,
+                    event = file.next() => event,
+                };
+                let event = match event {
+                    Some(FileEvent::Appended { offset, data }) => {
+                        FollowEvent::Appended { offset, data }
+                    }
+                    Some(FileEvent::Ended(reason)) => FollowEvent::Ended(format!("{reason:?}")),
+                    // The cockpit was shut down.
+                    None => FollowEvent::Ended("the cockpit connection ended".to_owned()),
+                };
+                let ended = matches!(event, FollowEvent::Ended(_));
+                if sender.send(event).is_err() || ended {
+                    break;
+                }
+            }
+            // `file` goes with the task, which cancels the follow on the daemon.
+        });
+        Ok(FileFollow::new(receiver))
     }
 }
 

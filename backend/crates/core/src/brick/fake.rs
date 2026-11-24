@@ -20,7 +20,8 @@ use tokio::time::Instant;
 
 use crate::port::{
     BrickEntry, BrickError, BrickEvent, BrickFileReader, BrickPort, Clock, DeployItem, EntryKind,
-    FileSource, ProgramState, RemoveReport, StartOutcome, StartReport, Subscription,
+    FileFollow, FileSource, FollowEvent, ProgramState, RemoveReport, StartOutcome, StartReport,
+    Subscription,
 };
 
 /// Virtual wall time on tokio's paused clock, starting at a fixed date.
@@ -85,15 +86,68 @@ pub struct FakeBrick {
     pub on_remove: Option<Hook>,
     /// Rewrites the MD5 each listed file reports.
     pub list_md5: Option<Md5Rewrite>,
+    /// How many files may be followed at once, all followers together (cockpit's limit).
+    pub max_follows: usize,
     listeners: Vec<mpsc::UnboundedSender<BrickEvent>>,
+    follows: Vec<FakeFollow>,
     clock: TestClock,
 }
 
+/// One follow of a file: the bytes it has been told so far.
+struct FakeFollow {
+    path: String,
+    sent: usize,
+    events: mpsc::UnboundedSender<FollowEvent>,
+}
+
 impl FakeBrick {
+    /// Puts a file, replacing any content. Followers of the path hear what was added when the
+    /// new content starts with what they were told.
     pub fn put_file(&mut self, path: &str, content: impl AsRef<[u8]>) {
         self.mkdirs(parent_of(path));
         self.files
             .insert(path.to_owned(), content.as_ref().to_vec());
+        self.tell_followers(path);
+    }
+
+    /// Adds bytes to the end of a file, creating it; its followers hear them.
+    pub fn append(&mut self, path: &str, data: impl AsRef<[u8]>) {
+        self.mkdirs(parent_of(path));
+        self.files
+            .entry(path.to_owned())
+            .or_default()
+            .extend_from_slice(data.as_ref());
+        self.tell_followers(path);
+    }
+
+    fn tell_followers(&mut self, path: &str) {
+        let Some(content) = self.files.get(path) else {
+            return;
+        };
+        for follow in self.follows.iter_mut().filter(|f| f.path == path) {
+            if content.len() > follow.sent {
+                let data = content[follow.sent..].to_vec();
+                let offset = follow.sent as u64;
+                follow.sent = content.len();
+                let _ = follow.events.send(FollowEvent::Appended { offset, data });
+            }
+        }
+    }
+
+    /// Follows still held by someone.
+    pub fn follow_count(&self) -> usize {
+        self.follows
+            .iter()
+            .filter(|follow| !follow.events.is_closed())
+            .count()
+    }
+
+    /// Ends every follow of `path` from the port's side, with cockpit's reason.
+    pub fn end_follows(&mut self, path: &str, reason: &str) {
+        for follow in self.follows.iter().filter(|f| f.path == path) {
+            let _ = follow.events.send(FollowEvent::Ended(reason.to_owned()));
+        }
+        self.follows.retain(|follow| follow.path != path);
     }
 
     pub fn mkdirs(&mut self, path: &str) {
@@ -201,7 +255,9 @@ impl FakeBrickPort {
                 replay_on_subscribe: None,
                 on_remove: None,
                 list_md5: None,
+                max_follows: 2,
                 listeners: Vec::new(),
+                follows: Vec::new(),
                 clock: TestClock::new(),
             })),
         }
@@ -436,6 +492,32 @@ impl BrickPort for FakeBrickPort {
             }
             brick.listeners.push(sender);
             Ok(Subscription::new(receiver))
+        })
+    }
+
+    async fn follow_file(&self, path: &str) -> Result<FileFollow, BrickError> {
+        self.call("follow_file", path, |brick| {
+            let Some(content) = brick.files.get(path).cloned() else {
+                return Err(cockpit_error("file_not_found"));
+            };
+            if brick.follow_count() >= brick.max_follows {
+                return Err(cockpit_error("invalid_request"));
+            }
+            brick.follows.retain(|follow| !follow.events.is_closed());
+            let (events, receiver) = mpsc::unbounded_channel();
+            if !content.is_empty() {
+                // Cannot fail: the receiver is right here.
+                let _ = events.send(FollowEvent::Appended {
+                    offset: 0,
+                    data: content.clone(),
+                });
+            }
+            brick.follows.push(FakeFollow {
+                path: path.to_owned(),
+                sent: content.len(),
+                events,
+            });
+            Ok(FileFollow::new(receiver))
         })
     }
 }
