@@ -80,15 +80,16 @@ test('lines are split on line ends, also with a character split across chunks', 
     assert.deepEqual(lines, ['{"text":"EVƎ"}', '{"a":1}']);
 });
 
-test('the program is the packaged one, else the one Cargo built, release before debug', () => {
+test('the program is the packaged one, else the one Cargo built last', () => {
     const exe = process.platform === 'win32' ? 'ev3-c.exe' : 'ev3-c';
     const root = path.join('x', 'ext');
-    const present = (...files: string[]) => (file: string) => files.includes(file);
     const packaged = path.join(root, 'bin', exe);
     const release = path.join(root, 'backend', 'target', 'release', exe);
     const debug = path.join(root, 'backend', 'target', 'debug', exe);
-    assert.equal(findProgram(root, present(packaged, release, debug)), packaged);
-    assert.equal(findProgram(root, present(release, debug)), release);
-    assert.equal(findProgram(root, present(debug)), debug);
-    assert.throws(() => findProgram(root, present()), /is missing/);
+    const written = (times: Record<string, number>) => (file: string) => times[file];
+    assert.equal(findProgram(root, written({ [packaged]: 1, [release]: 2, [debug]: 3 })), packaged);
+    assert.equal(findProgram(root, written({ [release]: 2, [debug]: 3 })), debug, 'a newer debug build wins over an old release');
+    assert.equal(findProgram(root, written({ [release]: 3, [debug]: 2 })), release);
+    assert.equal(findProgram(root, written({ [debug]: 1 })), debug);
+    assert.throws(() => findProgram(root, written({})), /is missing/);
 });

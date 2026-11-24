@@ -187,17 +187,32 @@ export class LineReader {
 
 const EXE = process.platform === 'win32' ? 'ev3-c.exe' : 'ev3-c';
 
+/** When a file was last written, in milliseconds; undefined when it does not exist. */
+export type ModifiedAt = (file: string) => number | undefined;
+
+const modifiedAt: ModifiedAt = file => {
+    try {
+        return fs.statSync(file).mtimeMs;
+    } catch {
+        return undefined;
+    }
+};
+
 /**
  * The `ev3-c` program: the one packaged with the extension (`bin/`), else, in a working copy of
- * the repository, the one Cargo built (release before debug).
+ * the repository, the one Cargo built last, release or debug, so a stale build never wins.
  */
-export function findProgram(extensionPath: string, exists: (file: string) => boolean = fs.existsSync): string {
-    const candidates = [
-        path.join(extensionPath, 'bin', EXE),
-        path.join(extensionPath, 'backend', 'target', 'release', EXE),
-        path.join(extensionPath, 'backend', 'target', 'debug', EXE),
-    ];
-    const found = candidates.find(exists);
+export function findProgram(extensionPath: string, written: ModifiedAt = modifiedAt): string {
+    const packaged = path.join(extensionPath, 'bin', EXE);
+    if (written(packaged) !== undefined) {
+        return packaged;
+    }
+    const built = ['release', 'debug']
+        .map(profile => path.join(extensionPath, 'backend', 'target', profile, EXE))
+        .map(file => ({ file, at: written(file) }))
+        .filter((candidate): candidate is { file: string; at: number } => candidate.at !== undefined)
+        .sort((a, b) => b.at - a.at);
+    const found = built[0]?.file;
     if (found === undefined) {
         throw new Ev3cError(`EVƎ C's program ${EXE} is missing from ${path.join(extensionPath, 'bin')}. `
             + 'Reinstall EVƎ C; in a working copy of the repository, run "cargo build" in backend/.');
