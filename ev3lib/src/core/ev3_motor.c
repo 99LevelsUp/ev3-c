@@ -9,7 +9,10 @@
  *     lms2012/source/lms2012.h, copied whole with memcpy() by the driver and
  *     written with sizeof by the firmware's own output module
  *     (c_output/source/c_output.c:1138, 1224), so they keep the structs'
- *     ARM EABI layout, padding included;
+ *     ARM EABI layout, padding included; their three values are the ramp up,
+ *     the steady part and the ramp down;
+ *   - the sync commands (d_pwm.c:2704-3035) are the STEPSYNC and TIMESYNC
+ *     structs the same way: two motors, a turn ratio and one amount;
  *   - d_pwm.c:3037-3045: reading the PWM device gives "<ready> <test> ", two
  *     port masks; a test bit stays set while a step or time command runs
  *     (opOUTPUT_TEST, c_output.c);
@@ -46,6 +49,21 @@ typedef struct {
     int8_t brake;
 } ev3_step_command;
 
+/*
+ * lms2012.h STEPSYNC and TIMESYNC: two motors, a turn ratio and one amount, in
+ * steps (degrees) or milliseconds. d_pwm.c:2704-3035 takes the motors in port
+ * order whatever the program calls them: a positive turn makes the lower port
+ * the faster one, a negative turn the higher port.
+ */
+typedef struct {
+    int8_t cmd;
+    int8_t nos;
+    int8_t speed;
+    int16_t turn;
+    int32_t amount;
+    int8_t brake;
+} ev3_sync_command;
+
 /* lms2012.h MOTORDATA, one per port. */
 typedef struct {
     int32_t tacho_counts;
@@ -57,7 +75,11 @@ typedef struct {
 _Static_assert(sizeof(ev3_step_command) == 20, "STEPSPEED/TIMESPEED are 20 bytes");
 _Static_assert(offsetof(ev3_step_command, value1) == 4, "the first 32-bit value follows one byte of padding");
 _Static_assert(offsetof(ev3_step_command, brake) == 16, "the brake byte follows the three values");
-_Static_assert(sizeof(ev3_motor_data) == 12, "MOTORDATA is 12 bytes per port");
+_Static_assert(sizeof(ev3_sync_command) == 16, "STEPSYNC/TIMESYNC are 16 bytes");
+_Static_assert(offsetof(ev3_sync_command, turn) == 4, "the turn ratio follows one byte of padding");
+_Static_assert(offsetof(ev3_sync_command, amount) == 8, "the amount follows the turn and two bytes of padding");
+_Static_assert(offsetof(ev3_sync_command, brake) == 12, "the brake byte follows the amount");
+_Static_assert(sizeof(ev3_motor_data) == 12,"MOTORDATA is 12 bytes per port");
 _Static_assert(offsetof(ev3_motor_data, tacho_sensor) == 8, "TachoSensor follows Speed and three bytes of padding");
 
 static Ev3Result check_percent(const char *what, int value)
@@ -65,6 +87,14 @@ static Ev3Result check_percent(const char *what, int value)
     /* A value outside -100..100 would wrap around in the command byte and could reverse the motor. */
     if (value < -100 || value > 100) {
         return ev3_fail(EV3_ERR_PARAM, "%s %d is outside -100 to 100", what, value);
+    }
+    return EV3_OK;
+}
+
+static Ev3Result check_stop_mode(Ev3StopMode mode)
+{
+    if (mode != EV3_STOP_COAST && mode != EV3_STOP_BRAKE) {
+        return ev3_fail(EV3_ERR_PARAM, "stop mode %d is neither EV3_STOP_COAST nor EV3_STOP_BRAKE", (int)mode);
     }
     return EV3_OK;
 }
@@ -114,11 +144,11 @@ Ev3Result ev3_motor_try_stop(Ev3Port ports, Ev3StopMode mode)
     unsigned char stop[3];
     Ev3Result result = ev3_check_motor_ports(ports);
 
+    if (result == EV3_OK) {
+        result = check_stop_mode(mode);
+    }
     if (result != EV3_OK) {
         return result;
-    }
-    if (mode != EV3_STOP_COAST && mode != EV3_STOP_BRAKE) {
-        return ev3_fail(EV3_ERR_PARAM, "stop mode %d is neither EV3_STOP_COAST nor EV3_STOP_BRAKE", (int)mode);
     }
     stop[0] = EV3_OP_OUTPUT_STOP;
     stop[1] = (unsigned char)ports;
@@ -143,8 +173,9 @@ Ev3Result ev3_motor_try_set_polarity(Ev3Port ports, int polarity)
     return write_command(command, sizeof command);
 }
 
-/* A step or time command: no ramp up or down, the whole amount at the given speed, then brake. */
-static Ev3Result start_for(unsigned char opcode, Ev3Port ports, int speed, int32_t amount)
+/* A step or time command: speeding up over up, the given speed over steady, slowing down over down. */
+static Ev3Result start_ramp(unsigned char opcode, Ev3Port ports, int speed, int32_t up, int32_t steady, int32_t down,
+                            bool brake)
 {
     ev3_step_command command;
 
@@ -152,9 +183,17 @@ static Ev3Result start_for(unsigned char opcode, Ev3Port ports, int speed, int32
     command.cmd = (int8_t)opcode;
     command.nos = (int8_t)ports;
     command.speed = (int8_t)speed;
-    command.value2 = amount;
-    command.brake = 1;
+    command.value1 = up;
+    command.value2 = steady;
+    command.value3 = down;
+    command.brake = brake ? 1 : 0;
     return write_command((const unsigned char *)&command, sizeof command);
+}
+
+/* A step or time command without a ramp: the whole amount at the given speed, then brake. */
+static Ev3Result start_for(unsigned char opcode, Ev3Port ports, int speed, int32_t amount)
+{
+    return start_ramp(opcode, ports, speed, 0, amount, 0, true);
 }
 
 Ev3Result ev3_motor_try_start_degrees(Ev3Port ports, int speed, int degrees)
@@ -217,20 +256,240 @@ Ev3Result ev3_motor_try_run_degrees(Ev3Port ports, int speed, int degrees)
     return result == EV3_OK ? ev3_motor_try_wait(ports, 0) : result;
 }
 
-Ev3Result ev3_motor_try_run_rotations(Ev3Port ports, int speed, float rotations)
+/* Whole turns as degrees, rounded. */
+static Ev3Result rotations_to_degrees(float rotations, int *degrees)
 {
-    float degrees = rotations * 360.0f;
+    float value = rotations * 360.0f;
 
-    if (!(degrees > -2000000000.0f && degrees < 2000000000.0f)) {
+    if (!(value > -2000000000.0f && value < 2000000000.0f)) {
         return ev3_fail(EV3_ERR_PARAM, "%g rotations is out of range", (double)rotations);
     }
-    return ev3_motor_try_run_degrees(ports, speed, (int)(degrees < 0.0f ? degrees - 0.5f : degrees + 0.5f));
+    *degrees = (int)(value < 0.0f ? value - 0.5f : value + 0.5f);
+    return EV3_OK;
+}
+
+Ev3Result ev3_motor_try_run_rotations(Ev3Port ports, int speed, float rotations)
+{
+    int degrees = 0;
+    Ev3Result result = rotations_to_degrees(rotations, &degrees);
+    return result == EV3_OK ? ev3_motor_try_run_degrees(ports, speed, degrees) : result;
 }
 
 Ev3Result ev3_motor_try_run_seconds(Ev3Port ports, int speed, float seconds)
 {
     Ev3Result result = ev3_motor_try_start_seconds(ports, speed, seconds);
     return result == EV3_OK ? ev3_motor_try_wait(ports, 0) : result;
+}
+
+/* --- ramps --------------------------------------------------------------------- */
+
+/* A ramp's three amounts: none negative, and together within the firmware's 32-bit count. */
+static Ev3Result check_ramp(const char *unit, long long up, long long steady, long long down)
+{
+    if (up < 0 || steady < 0 || down < 0) {
+        return ev3_fail(EV3_ERR_PARAM, "%s %lld, %lld and %lld: a ramp cannot be negative; a negative speed turns the other way",
+                        unit, up, steady, down);
+    }
+    if (up + steady + down > 2000000000LL) {
+        return ev3_fail(EV3_ERR_PARAM, "%s %lld, %lld and %lld are too many together", unit, up, steady, down);
+    }
+    return EV3_OK;
+}
+
+Ev3Result ev3_motor_try_start_degrees_ramp(Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode)
+{
+    Ev3Result result = ev3_check_motor_ports(ports);
+
+    if (result == EV3_OK) {
+        result = check_percent("speed", speed);
+    }
+    if (result == EV3_OK) {
+        result = check_stop_mode(mode);
+    }
+    if (result == EV3_OK) {
+        result = check_ramp("degrees", up, steady, down);
+    }
+    if (result != EV3_OK) {
+        return result;
+    }
+    /* At speed 0 a count of degrees would never end. */
+    if (speed == 0 || (long long)up + steady + down == 0) {
+        return EV3_OK;
+    }
+    return start_ramp(EV3_OP_OUTPUT_STEP_SPEED, ports, speed, up, steady, down, mode == EV3_STOP_BRAKE);
+}
+
+Ev3Result ev3_motor_try_run_degrees_ramp(Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode)
+{
+    Ev3Result result = ev3_motor_try_start_degrees_ramp(ports, speed, up, steady, down, mode);
+    return result == EV3_OK ? ev3_motor_try_wait(ports, 0) : result;
+}
+
+Ev3Result ev3_motor_try_start_seconds_ramp(Ev3Port ports, int speed, float up, float steady, float down,
+                                           Ev3StopMode mode)
+{
+    int32_t up_ms = 0, steady_ms = 0, down_ms = 0;
+    Ev3Result result = ev3_check_motor_ports(ports);
+
+    if (result == EV3_OK) {
+        result = check_percent("speed", speed);
+    }
+    if (result == EV3_OK) {
+        result = check_stop_mode(mode);
+    }
+    if (result == EV3_OK) {
+        result = milliseconds(up, &up_ms);
+    }
+    if (result == EV3_OK) {
+        result = milliseconds(steady, &steady_ms);
+    }
+    if (result == EV3_OK) {
+        result = milliseconds(down, &down_ms);
+    }
+    if (result == EV3_OK) {
+        result = check_ramp("milliseconds", up_ms, steady_ms, down_ms);
+    }
+    if (result != EV3_OK) {
+        return result;
+    }
+    if ((long long)up_ms + steady_ms + down_ms == 0) {
+        return EV3_OK;
+    }
+    return start_ramp(EV3_OP_OUTPUT_TIME_SPEED, ports, speed, up_ms, steady_ms, down_ms, mode == EV3_STOP_BRAKE);
+}
+
+Ev3Result ev3_motor_try_run_seconds_ramp(Ev3Port ports, int speed, float up, float steady, float down,
+                                         Ev3StopMode mode)
+{
+    Ev3Result result = ev3_motor_try_start_seconds_ramp(ports, speed, up, steady, down, mode);
+    return result == EV3_OK ? ev3_motor_try_wait(ports, 0) : result;
+}
+
+/* --- two motors together ------------------------------------------------------- */
+
+/*
+ * Checks a sync pair and gives the port mask and the turn as the driver reads
+ * it: the driver takes the lower port as the one a positive turn speeds up, so
+ * the turn changes sign when the left motor is on the higher port.
+ */
+static Ev3Result sync_pair(Ev3Port left, Ev3Port right, int speed, int turn, Ev3Port *ports, int *driver_turn)
+{
+    int left_index = 0, right_index = 0;
+    Ev3Result result = ev3_check_motor_port(left, &left_index);
+
+    if (result == EV3_OK) {
+        result = ev3_check_motor_port(right, &right_index);
+    }
+    if (result != EV3_OK) {
+        return result;
+    }
+    if (left_index == right_index) {
+        return ev3_fail(EV3_ERR_PARAM, "left and right are both port %s; two motors together need two ports",
+                        ev3_port_name(left));
+    }
+    result = check_percent("speed", speed);
+    if (result != EV3_OK) {
+        return result;
+    }
+    if (turn < -200 || turn > 200) {
+        return ev3_fail(EV3_ERR_PARAM, "turn %d is outside -200 to 200", turn);
+    }
+    *ports = left | right;
+    *driver_turn = left_index < right_index ? turn : -turn;
+    return EV3_OK;
+}
+
+static Ev3Result start_sync(unsigned char opcode, Ev3Port ports, int speed, int turn, int32_t amount)
+{
+    ev3_sync_command command;
+
+    memset(&command, 0, sizeof command);
+    command.cmd = (int8_t)opcode;
+    command.nos = (int8_t)ports;
+    command.speed = (int8_t)speed;
+    command.turn = (int16_t)turn;
+    command.amount = amount;
+    command.brake = 1;
+    return write_command((const unsigned char *)&command, sizeof command);
+}
+
+Ev3Result ev3_motor_try_sync_start(Ev3Port left, Ev3Port right, int speed, int turn)
+{
+    Ev3Port ports = 0;
+    int driver_turn = 0;
+    Ev3Result result = sync_pair(left, right, speed, turn, &ports, &driver_turn);
+
+    /* A step count of 0 runs until the motors are stopped (d_pwm.c:2735-2739). */
+    return result == EV3_OK ? start_sync(EV3_OP_OUTPUT_STEP_SYNC, ports, speed, driver_turn, 0) : result;
+}
+
+Ev3Result ev3_motor_try_sync_start_degrees(Ev3Port left, Ev3Port right, int speed, int turn, int degrees)
+{
+    Ev3Port ports = 0;
+    int driver_turn = 0;
+    Ev3Result result = sync_pair(left, right, speed, turn, &ports, &driver_turn);
+
+    if (result != EV3_OK) {
+        return result;
+    }
+    if (degrees == INT32_MIN) {
+        return ev3_fail(EV3_ERR_PARAM, "degrees %d is out of range", degrees);
+    }
+    if (degrees < 0) {
+        degrees = -degrees;
+        speed = -speed;
+    }
+    /* 0 degrees would run without end; so would a count at speed 0. */
+    if (degrees == 0 || speed == 0) {
+        return EV3_OK;
+    }
+    return start_sync(EV3_OP_OUTPUT_STEP_SYNC, ports, speed, driver_turn, degrees);
+}
+
+Ev3Result ev3_motor_try_sync_start_seconds(Ev3Port left, Ev3Port right, int speed, int turn, float seconds)
+{
+    Ev3Port ports = 0;
+    int driver_turn = 0;
+    int32_t ms = 0;
+    Ev3Result result = sync_pair(left, right, speed, turn, &ports, &driver_turn);
+
+    if (result == EV3_OK) {
+        result = milliseconds(seconds, &ms);
+    }
+    if (result != EV3_OK || ms == 0) {
+        return result;
+    }
+    return start_sync(EV3_OP_OUTPUT_TIME_SYNC, ports, speed, driver_turn, ms);
+}
+
+Ev3Result ev3_motor_try_sync_run_degrees(Ev3Port left, Ev3Port right, int speed, int turn, int degrees)
+{
+    Ev3Result result = ev3_motor_try_sync_start_degrees(left, right, speed, turn, degrees);
+    return result == EV3_OK ? ev3_motor_try_wait(left | right, 0) : result;
+}
+
+Ev3Result ev3_motor_try_sync_run_rotations(Ev3Port left, Ev3Port right, int speed, int turn, float rotations)
+{
+    int degrees = 0;
+    Ev3Result result = rotations_to_degrees(rotations, &degrees);
+    return result == EV3_OK ? ev3_motor_try_sync_run_degrees(left, right, speed, turn, degrees) : result;
+}
+
+Ev3Result ev3_motor_try_sync_run_seconds(Ev3Port left, Ev3Port right, int speed, int turn, float seconds)
+{
+    Ev3Result result = ev3_motor_try_sync_start_seconds(left, right, speed, turn, seconds);
+    return result == EV3_OK ? ev3_motor_try_wait(left | right, 0) : result;
+}
+
+Ev3Result ev3_motor_try_sync_stop(Ev3Port left, Ev3Port right, Ev3StopMode mode)
+{
+    int index = 0;
+    Ev3Result result = ev3_check_motor_port(left, &index);
+
+    if (result == EV3_OK) {
+        result = ev3_check_motor_port(right, &index);
+    }
+    return result == EV3_OK ? ev3_motor_try_stop(left | right, mode) : result;
 }
 
 Ev3Result ev3_motor_try_is_busy(Ev3Port ports, bool *busy)
@@ -450,4 +709,61 @@ void ev3_motor_start_degrees_at_(EV3_AT, Ev3Port ports, int speed, int degrees)
 void ev3_motor_start_seconds_at_(EV3_AT, Ev3Port ports, int speed, float seconds)
 {
     EV3_MUST("ev3_motor_start_seconds", ev3_motor_try_start_seconds(ports, speed, seconds));
+}
+
+void ev3_motor_run_degrees_ramp_at_(EV3_AT, Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode)
+{
+    EV3_MUST("ev3_motor_run_degrees_ramp", ev3_motor_try_run_degrees_ramp(ports, speed, up, steady, down, mode));
+}
+
+void ev3_motor_start_degrees_ramp_at_(EV3_AT, Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode)
+{
+    EV3_MUST("ev3_motor_start_degrees_ramp", ev3_motor_try_start_degrees_ramp(ports, speed, up, steady, down, mode));
+}
+
+void ev3_motor_run_seconds_ramp_at_(EV3_AT, Ev3Port ports, int speed, float up, float steady, float down,
+                                    Ev3StopMode mode)
+{
+    EV3_MUST("ev3_motor_run_seconds_ramp", ev3_motor_try_run_seconds_ramp(ports, speed, up, steady, down, mode));
+}
+
+void ev3_motor_start_seconds_ramp_at_(EV3_AT, Ev3Port ports, int speed, float up, float steady, float down,
+                                      Ev3StopMode mode)
+{
+    EV3_MUST("ev3_motor_start_seconds_ramp", ev3_motor_try_start_seconds_ramp(ports, speed, up, steady, down, mode));
+}
+
+void ev3_motor_sync_start_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn)
+{
+    EV3_MUST("ev3_motor_sync_start", ev3_motor_try_sync_start(left, right, speed, turn));
+}
+
+void ev3_motor_sync_run_degrees_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn, int degrees)
+{
+    EV3_MUST("ev3_motor_sync_run_degrees", ev3_motor_try_sync_run_degrees(left, right, speed, turn, degrees));
+}
+
+void ev3_motor_sync_run_rotations_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn, float rotations)
+{
+    EV3_MUST("ev3_motor_sync_run_rotations", ev3_motor_try_sync_run_rotations(left, right, speed, turn, rotations));
+}
+
+void ev3_motor_sync_run_seconds_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn, float seconds)
+{
+    EV3_MUST("ev3_motor_sync_run_seconds", ev3_motor_try_sync_run_seconds(left, right, speed, turn, seconds));
+}
+
+void ev3_motor_sync_start_degrees_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn, int degrees)
+{
+    EV3_MUST("ev3_motor_sync_start_degrees", ev3_motor_try_sync_start_degrees(left, right, speed, turn, degrees));
+}
+
+void ev3_motor_sync_start_seconds_at_(EV3_AT, Ev3Port left, Ev3Port right, int speed, int turn, float seconds)
+{
+    EV3_MUST("ev3_motor_sync_start_seconds", ev3_motor_try_sync_start_seconds(left, right, speed, turn, seconds));
+}
+
+void ev3_motor_sync_stop_at_(EV3_AT, Ev3Port left, Ev3Port right, Ev3StopMode mode)
+{
+    EV3_MUST("ev3_motor_sync_stop", ev3_motor_try_sync_stop(left, right, mode));
 }
