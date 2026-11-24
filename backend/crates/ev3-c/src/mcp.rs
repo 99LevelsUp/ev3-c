@@ -107,35 +107,35 @@ const BRICK: Property = Property {
 pub const TOOLS: [Tool; 6] = [
     Tool {
         name: "build_project",
-        description: "Build an EVƎ C project (C for the LEGO EV3 with its original firmware) into the program, its launcher and the supervisor. Returns the artifacts and any compiler warnings; a failed build returns the compiler errors.",
+        description: "EVƎ C: Build an EVƎ C project (C for the LEGO EV3 with its original firmware) into the program, its launcher and the supervisor. Returns the artifacts and any compiler warnings; a failed build returns the compiler errors.",
         properties: &[PROJECT],
         required: &["project"],
         argv: |_, project| vec!["build".to_owned(), project.to_owned()],
     },
     Tool {
         name: "upload_project",
-        description: "Build an EVƎ C project and upload what changed to the brick, without running it. Refused while a program runs on the brick.",
+        description: "EVƎ C: Build an EVƎ C project and upload what changed to the brick, without running it. Refused while a program runs on the brick.",
         properties: &[PROJECT, BRICK],
         required: &["project"],
         argv: |args, project| with_brick(args, vec!["upload".to_owned(), project.to_owned()]),
     },
     Tool {
         name: "run_project",
-        description: "Build an EVƎ C project, upload it and run it on the brick, then wait for the run to end and return its result: how it ended (exit code or signal), its stdout and stderr, and the files it returned, which are downloaded into the project's returned/run-<n> folder. Cancelling the call stops the program. To stop a program you did not start here, use EVƎ Cockpit's stop_program.",
+        description: "EVƎ C: Build an EVƎ C project, upload it and run it on the brick, then wait for the run to end and return its result: how it ended (exit code or signal), its stdout and stderr, and the files it returned, which are downloaded into the project's returned/run-<n> folder. Cancelling the call stops the program. To stop a program you did not start here, use EVƎ Cockpit's stop_program.",
         properties: &[PROJECT, BRICK],
         required: &["project"],
         argv: |args, project| with_brick(args, vec!["run".to_owned(), project.to_owned()]),
     },
     Tool {
         name: "list_project_runs",
-        description: "List an EVƎ C project's runs kept on the brick, oldest first, with how each ended; a run without a record is still running or was interrupted.",
+        description: "EVƎ C: List an EVƎ C project's runs kept on the brick, oldest first, with how each ended; a run without a record is still running or was interrupted.",
         properties: &[PROJECT, BRICK],
         required: &["project"],
         argv: |args, project| with_brick(args, vec!["runs".to_owned(), project.to_owned()]),
     },
     Tool {
         name: "show_project_run",
-        description: "Return one run of an EVƎ C project: how it ended, its output, and the files it returned, downloaded into the project's returned/run-<n> folder.",
+        description: "EVƎ C: Return one run of an EVƎ C project: how it ended, its output, and the files it returned, downloaded into the project's returned/run-<n> folder.",
         properties: &[
             PROJECT,
             Property {
@@ -161,7 +161,7 @@ pub const TOOLS: [Tool; 6] = [
     },
     Tool {
         name: "delete_project_runs",
-        description: "Delete an EVƎ C project's run folders on the brick, all of them or all but the newest `keep`. The folder of a run in progress is never deleted.",
+        description: "EVƎ C: Delete an EVƎ C project's run folders on the brick, all of them or all but the newest `keep`. The folder of a run in progress is never deleted.",
         properties: &[
             PROJECT,
             Property {
