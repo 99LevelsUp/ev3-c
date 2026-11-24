@@ -36,6 +36,16 @@ pub fn started_text(started_at: Option<SystemTime>) -> String {
 }
 
 pub fn format_run_result(project: &str, result: &RunResult) -> Vec<String> {
+    run_result_lines(project, result, true)
+}
+
+/// As [`format_run_result`] after the output was shown while the program ran: the outputs
+/// are not repeated, only what is to know about them (truncated, or not read).
+pub fn format_run_result_shown(project: &str, result: &RunResult) -> Vec<String> {
+    run_result_lines(project, result, false)
+}
+
+fn run_result_lines(project: &str, result: &RunResult, bodies: bool) -> Vec<String> {
     let record = &result.record;
     let mut lines = vec![
         format!("--- {project}, run {} ---", result.run),
@@ -48,16 +58,26 @@ pub fn format_run_result(project: &str, result: &RunResult) -> Vec<String> {
             }
         ),
     ];
-    lines.extend(stream(
-        "Output (stdout)",
-        result.out.as_deref(),
-        record.out_truncated,
-    ));
-    lines.extend(stream(
-        "Errors (stderr)",
-        result.err.as_deref(),
-        record.err_truncated,
-    ));
+    for (title, text, truncated) in [
+        (
+            "Output (stdout)",
+            result.out.as_deref(),
+            record.out_truncated,
+        ),
+        (
+            "Errors (stderr)",
+            result.err.as_deref(),
+            record.err_truncated,
+        ),
+    ] {
+        if bodies {
+            lines.extend(stream(title, text, truncated));
+        } else if text.is_none() {
+            lines.push(format!("{title}: could not be read from the brick"));
+        } else if truncated {
+            lines.push(format!("{title}: truncated at the size limit"));
+        }
+    }
     if !result.returned.is_empty() {
         lines.push("Returned files:".to_owned());
         lines.extend(result.returned.iter().map(|path| format!("  {path}")));

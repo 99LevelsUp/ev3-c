@@ -12,8 +12,8 @@ use crate::port::{BrickError, BrickFileReader, BrickPort};
 use crate::results::{RunRecord, RunRecordError, parse_run_record};
 use crate::returned::{RETURN_LIST_FILE, parse_return_list};
 
-const OUT_FILE: &str = "out";
-const ERR_FILE: &str = "err";
+pub(crate) const OUT_FILE: &str = "out";
+pub(crate) const ERR_FILE: &str = "err";
 
 /// Launch IDs of the runs EVƎ C started, with their start times by this computer's clock.
 /// A Run adds its own while result readers look theirs up, so it is shared, not borrowed
@@ -159,28 +159,47 @@ pub async fn result_from_record(
     launches: &Launches,
     present: Option<&HashSet<String>>,
 ) -> RunResult {
+    result_with_raw_output(reader, project, run, record, launches, present)
+        .await
+        .0
+}
+
+/// The bytes of a run's stdout and stderr as the brick holds them; `None` when unread.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawOutput {
+    pub out: Option<Vec<u8>>,
+    pub err: Option<Vec<u8>>,
+}
+
+/// As [`result_from_record`], with the outputs' bytes too, for a caller that already showed
+/// part of them and needs the rest by byte offset.
+pub async fn result_with_raw_output(
+    reader: &impl BrickFileReader,
+    project: &str,
+    run: i64,
+    record: RunRecord,
+    launches: &Launches,
+    present: Option<&HashSet<String>>,
+) -> (RunResult, RawOutput) {
     let dir = run_dir(project, run);
-    let read_output = async |name: &str| -> Option<String> {
+    let read_bytes = async |name: &str| -> Option<Vec<u8>> {
         if present.is_some_and(|present| !present.contains(name)) {
             return None;
         }
-        reader
-            .read_file(&format!("{dir}/{name}"))
-            .await
-            .ok()
-            .map(|data| text(&data))
+        reader.read_file(&format!("{dir}/{name}")).await.ok()
     };
-    let out = read_output(OUT_FILE).await;
-    let err = read_output(ERR_FILE).await;
-    let list = read_output(RETURN_LIST_FILE).await;
-    RunResult {
+    let out = read_bytes(OUT_FILE).await;
+    let err = read_bytes(ERR_FILE).await;
+    let list = read_bytes(RETURN_LIST_FILE).await.map(|data| text(&data));
+    let result = RunResult {
         run,
         started_at: start_time(&record, launches),
         record,
-        out,
-        err,
+        out: out.as_deref().map(text),
+        err: err.as_deref().map(text),
         returned: list.map_or_else(Vec::new, |list| parse_return_list(&list)),
-    }
+    };
+    (result, RawOutput { out, err })
 }
 
 /// Every run folder of the project, oldest first, with its completion record and, for runs

@@ -293,6 +293,18 @@ impl Io for Captured {
     fn err(&mut self, text: &str) {
         self.err.push(text.to_owned());
     }
+
+    // A piece of the program's output that ends its line is one message here, as a line the
+    // command writes is; the tests' pieces end their lines.
+    fn out_part(&mut self, text: &str) {
+        self.out
+            .push(text.strip_suffix('\n').unwrap_or(text).to_owned());
+    }
+
+    fn err_part(&mut self, text: &str) {
+        self.err
+            .push(text.strip_suffix('\n').unwrap_or(text).to_owned());
+    }
 }
 
 /// How a scripted run ends on the brick.
@@ -320,6 +332,7 @@ pub(crate) fn script_run(port: &FakeBrickPort, project: &str, run: i64, ending: 
             let launch = launch.trim_end();
             let runs = format!("{dir}/runs/{run}");
             brick.put_file(&format!("{dir}/runs/next"), (run + 1).to_string());
+            brick.put_file(&format!("{runs}/launch"), format!("{launch}\n"));
             brick.put_file(&format!("{runs}/out"), ending.out);
             brick.put_file(&format!("{runs}/err"), "");
             if let Some(list) = ending.returned {
