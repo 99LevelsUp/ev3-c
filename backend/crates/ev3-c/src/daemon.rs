@@ -281,6 +281,8 @@ impl BrickFileReader for CockpitPort {
                     brick,
                     inline: None,
                     path,
+                    // A fresh private folder: replacing (the default) is what is wanted.
+                    replace: None,
                     to_local_path: Some(local.display().to_string()),
                 })
                 .await
@@ -345,6 +347,8 @@ impl BrickPort for CockpitPort {
                 from_local_path,
                 handle: None,
                 path: path.to_owned(),
+                // An upload replaces the file on the brick, as before contract 3 made it optional.
+                replace: None,
             })
             .await
             .map_err(brick_error)?;
