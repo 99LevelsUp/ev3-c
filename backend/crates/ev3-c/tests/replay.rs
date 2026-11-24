@@ -69,6 +69,7 @@ async fn a_program_is_deployed_run_and_followed_to_its_end_through_the_cockpit()
                 .to_string(),
         ],
         state_root: Some(root.clone()),
+        notices_as_events: false,
     };
 
     let connection = connector

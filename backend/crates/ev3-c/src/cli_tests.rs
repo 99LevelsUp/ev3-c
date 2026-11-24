@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -18,6 +18,7 @@ use crate::cli::{
 };
 use crate::cockpit::CockpitError;
 use crate::daemon::CockpitConnector;
+use crate::format::iso_time;
 use crate::testing::{
     BRICK_ID, Captured, Ending, FakeCockpit, FakeConnector, OTHER_ID, compiler, deps, project,
     script_run,
@@ -705,6 +706,7 @@ async fn without_an_installed_cockpit_builds_work_and_brick_commands_say_how_to_
         connector: CockpitConnector {
             daemon_args: Vec::new(),
             state_root: Some(crate::testing::temp_dir("ev3c-no-cockpit-")),
+            notices_as_events: false,
         },
         clock: TestClock::new(),
         package_root: fake.deps.package_root.clone(),
@@ -938,5 +940,152 @@ async fn an_interrupt_before_the_start_ends_the_events_with_interrupted() {
     assert_eq!(
         events.last().unwrap(),
         &json!({ "event": "interrupted", "exitCode": 130, "interrupted": true })
+    );
+}
+
+#[tokio::test]
+async fn a_run_tells_its_launch_and_runs_tell_when_the_launches_handed_back_started() {
+    let mut s = Setup::new();
+    script_run(&s.port(), "hello", 1, exits_with("end=program\nexit=0\n"));
+    let ran = s.cli(&["run", "hello", "--events"]).await;
+    let events = events(&ran);
+    let started = &events[3];
+    assert_eq!(started["event"], "started");
+    let launch_id = started["launchId"].as_str().unwrap().to_owned();
+    assert!(!launch_id.is_empty());
+    assert!(started["startedAt"].as_str().unwrap().ends_with('Z'));
+
+    // Another `ev3-c` process knows the launch only from what its caller hands back.
+    let listed = s.cli(&["runs", "hello", "--json"]).await.json();
+    assert_eq!(listed["runs"][0].get("startedAt"), None);
+    let at = UNIX_EPOCH + Duration::from_millis(1_795_000_000_123);
+    s.deps.env.insert(
+        "EV3C_LAUNCHES".to_owned(),
+        format!("{{\"{launch_id}\": 1795000000123}}"),
+    );
+    let listed = s.cli(&["runs", "hello", "--json"]).await.json();
+    assert_eq!(listed["runs"][0]["startedAt"], iso_time(at));
+    let shown = s
+        .cli(&["runs", "show", "1", "hello", "--json"])
+        .await
+        .json();
+    assert_eq!(shown["result"]["startedAt"], iso_time(at));
+
+    s.deps
+        .env
+        .insert("EV3C_LAUNCHES".to_owned(), "not json".to_owned());
+    let listed = s.cli(&["runs", "hello", "--json"]).await;
+    assert_eq!(
+        listed.code, EXIT_OK,
+        "a wrong value only leaves times unknown"
+    );
+}
+
+/// Waits, without moving paused time, until `brick_id` has `count` program subscriptions.
+async fn until_followed(s: &Setup, brick_id: &str, count: usize) {
+    while s
+        .cockpit
+        .port(brick_id)
+        .with(|brick| brick.listener_count())
+        != count
+    {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn watch_follows_the_program_and_the_brick_without_holding_it() {
+    let mut s = Setup::new();
+    s.deps
+        .env
+        .insert("EV3C_CLIENT_NAME".to_owned(), "EVƎ C (VS Code)".to_owned());
+    let (watched, ()) = tokio::join!(s.cli(&["watch", "--events"]), async {
+        until_followed(&s, BRICK_ID, 1).await;
+        s.port().with(|brick| {
+            brick.running = true;
+            brick.run_seq = 1;
+            brick.emit_state();
+            // Told already: not again.
+            brick.emit_state();
+        });
+        s.cockpit.set_connected(BRICK_ID, false);
+        s.cockpit.changed();
+        until_followed(&s, BRICK_ID, 0).await;
+        s.cockpit.set_connected(BRICK_ID, true);
+        s.cockpit.changed();
+        until_followed(&s, BRICK_ID, 1).await;
+        s.port().with(|brick| brick.stop());
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        s.interrupt();
+    });
+    assert_eq!(watched.code, EXIT_OK);
+    assert!(watched.err.is_empty(), "{:?}", watched.err);
+    let events = events(&watched);
+    assert_eq!(
+        names(&events),
+        [
+            "program", "program", "noBrick", "program", "program", "done"
+        ]
+    );
+    assert_eq!(
+        events[0],
+        json!({ "event": "program", "brickId": BRICK_ID, "running": false, "runSeq": 0 })
+    );
+    assert_eq!(events[1]["running"], true);
+    assert_eq!(events[1]["runSeq"], 1);
+    assert_eq!(
+        events[2]["error"],
+        json!({ "message": "No brick is connected.", "code": "not_connected" })
+    );
+    assert_eq!(events[3]["running"], true, "read again on its return");
+    assert_eq!(events[4]["running"], false);
+    assert!(s.cockpit.calls().is_empty(), "never holds the brick");
+    assert_eq!(s.cockpit.names(), ["EVƎ C (VS Code)"]);
+}
+
+#[tokio::test]
+async fn watch_follows_the_brick_the_window_shows_and_tells_when_none_can_be_chosen() {
+    let s = Setup::new();
+    s.cockpit.add_brick(OTHER_ID, "BBB");
+    let (watched, ()) = tokio::join!(s.cli(&["watch"]), async {
+        // Two bricks and no window: none can be chosen until a window shows one.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        *s.cockpit.shown.lock().unwrap() = vec![OTHER_ID.to_owned()];
+        s.cockpit.changed();
+        until_followed(&s, OTHER_ID, 1).await;
+        *s.cockpit.view_failure.lock().unwrap() = Some(CockpitError::new(
+            "daemon_unavailable",
+            "The daemon is gone.",
+        ));
+        s.cockpit.changed();
+        until_followed(&s, OTHER_ID, 0).await;
+        s.interrupt();
+    });
+    assert_eq!(watched.code, EXIT_OK);
+    assert_eq!(
+        watched.out,
+        [
+            "No brick: Several bricks are connected (AAA, BBB); set \"ev3-c.brick\" to the one EVƎ C should use.".to_owned(),
+            format!("{OTHER_ID}: no program is running."),
+            "No brick: The daemon is gone.".to_owned(),
+        ]
+    );
+    assert!(s.cockpit.calls().is_empty());
+
+    *s.cockpit.view_failure.lock().unwrap() = None;
+    let refused = s.cli(&["watch", "--json"]).await;
+    assert_eq!(refused.code, EXIT_USAGE);
+    assert_eq!(s.cli(&["watch", "hello"]).await.code, EXIT_USAGE);
+}
+
+#[test]
+fn a_notice_of_the_cockpits_client_is_an_event_line() {
+    assert_eq!(
+        crate::cli::notice_event("Replacing \"the daemon\"…"),
+        r#"{"event":"notice","text":"Replacing \"the daemon\"…"}"#
     );
 }

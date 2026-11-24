@@ -16,6 +16,7 @@ use std::fmt;
 use std::future::Future;
 
 use ev3c_core::port::{BrickError, BrickFileReader, BrickPort};
+use tokio::sync::mpsc;
 
 /// What kind of client EVƎ C connects as. An `Mcp` client is an agent, which can never
 /// confirm anything on a person's behalf.
@@ -110,6 +111,42 @@ pub trait Connection: Sync {
         &self,
         setting: &str,
     ) -> impl Future<Output = Result<BrickHandle<Self::Port, Self::Reader>, CockpitError>> + Send;
+
+    /// The daemon's bricks and the bricks EVƎ Cockpit's VS Code windows show, now.
+    fn view(&self) -> impl Future<Output = Result<View, CockpitError>> + Send;
+
+    /// The port of a brick, without holding it: what only follows a brick (`watch`) uses.
+    fn port(&self, brick_id: &str) -> Self::Port;
+
+    /// One message for every change that may change which brick a setting names or whether it
+    /// is online: the brick list, what the windows show, a brick's link coming back, the
+    /// daemon replaced or lost. `None` once the connection is gone.
+    fn changes(&self) -> mpsc::UnboundedReceiver<()>;
+}
+
+/// What choosing a brick reads from the daemon.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct View {
+    pub bricks: Vec<BrickInfo>,
+    /// The bricks the cockpit's VS Code windows show ([`shown_bricks`]).
+    pub shown: Vec<String>,
+}
+
+/// The brick `setting` names in `view`, when it is online: what `watch` follows. Unlike a
+/// command, which asks the daemon to connect the brick it names, following never connects one.
+pub fn online_brick(setting: &str, view: &View) -> Result<String, CockpitError> {
+    let brick_id = resolve_brick(setting, &view.bricks, &view.shown)?;
+    match view.bricks.iter().find(|b| b.brick_id == brick_id) {
+        Some(brick) if brick.is_online() => Ok(brick_id),
+        Some(brick) => Err(CockpitError::new(
+            "not_connected",
+            format!("{} is not connected.", brick.name),
+        )),
+        None => Err(CockpitError::new(
+            "brick_not_found",
+            format!("EVƎ Cockpit knows no brick \"{setting}\"."),
+        )),
+    }
 }
 
 /// The brick the setting names. A name or id is passed on as written, or as the id of the
@@ -307,6 +344,23 @@ mod tests {
         assert!(!reconnecting.is_online());
         assert!(!no_link.is_online());
         let error = resolve_brick("active", &[reconnecting, no_link], &[]).unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("not_connected"));
+    }
+
+    #[test]
+    fn following_takes_only_an_online_brick_and_names_one_that_is_not() {
+        let view = |bricks: Vec<BrickInfo>, shows: &[&str]| View {
+            bricks,
+            shown: shown(shows),
+        };
+        let both = view(vec![brick(AAA, "AAA", true), brick(BBB, "BBB", false)], &[]);
+        assert_eq!(online_brick("active", &both).unwrap(), AAA);
+        let error = online_brick("BBB", &both).unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("not_connected"));
+        assert_eq!(error.message, "BBB is not connected.");
+        let error = online_brick("CCC", &both).unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("brick_not_found"));
+        let error = online_brick("active", &view(vec![], &[])).unwrap_err();
         assert_eq!(error.code.as_deref(), Some("not_connected"));
     }
 

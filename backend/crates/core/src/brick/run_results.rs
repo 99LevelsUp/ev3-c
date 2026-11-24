@@ -38,6 +38,14 @@ impl Launches {
         self.map().get(launch_id).copied()
     }
 
+    /// Every launch with its start time, in no particular order.
+    pub fn entries(&self) -> Vec<(String, SystemTime)> {
+        self.map()
+            .iter()
+            .map(|(launch_id, started_at)| (launch_id.clone(), *started_at))
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.map().len()
     }

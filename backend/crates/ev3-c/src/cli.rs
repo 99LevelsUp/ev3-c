@@ -7,6 +7,7 @@ use std::future::{Future, pending};
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -26,7 +27,10 @@ use ev3c_core::build::{
     BuildArtifact, BuildError, BuildProjectOptions, BuildResult, CompileStep, ToolchainSettings,
     build_project,
 };
-use ev3c_core::port::{BrickError, BrickFileReader, Clock, ProgramState, StartReport, SystemClock};
+use ev3c_core::port::{
+    BrickError, BrickEvent, BrickFileReader, BrickPort, Clock, ProgramState, StartReport,
+    Subscription, SystemClock,
+};
 use ev3c_core::project::{PROJECT_FILE, ProjectConfig, ProjectError, load_project_config};
 use ev3c_core::results::{RunEnd, RunRecord};
 use ev3c_core::returned::returned_dir;
@@ -37,7 +41,7 @@ use ev3c_core::toolchain::{
 
 use crate::args::{parse_arguments, wants_events};
 use crate::cockpit::{
-    BrickHandle, ClientKind, CockpitError, ConnectOptions, Connection, Connector,
+    BrickHandle, ClientKind, CockpitError, ConnectOptions, Connection, Connector, online_brick,
 };
 use crate::format::{format_no_result, format_returned, format_run_result, how_it_ended, iso_time};
 use crate::paths::resolve;
@@ -58,6 +62,7 @@ Commands:
   get <brick path> [local path]
                         download a file from the brick (default: its name, here)
   toolchain             check the compiler, downloading it when needed
+  watch                 follow the program state of the brick until Ctrl+C
   mcp                   serve the project commands as MCP tools on stdin and stdout
 
 The project folder holds ev3c.json; it is the current folder when none is given.
@@ -77,6 +82,13 @@ pub const EXIT_OK: i32 = 0;
 pub const EXIT_FAILED: i32 = 1;
 pub const EXIT_USAGE: i32 = 2;
 pub const EXIT_STOPPED: i32 = 130;
+
+/// The name a terminal client connects under instead of `ev3 c <command> (terminal)`.
+pub const CLIENT_NAME_VARIABLE: &str = "EV3C_CLIENT_NAME";
+/// Runs started earlier with their start times, as a JSON object of launch ID to
+/// milliseconds since 1970: a caller that keeps them from `started` events (EVƎ C's VS Code
+/// extension) hands them back, so `runs` and `runs show` can tell when those runs started.
+pub const LAUNCHES_VARIABLE: &str = "EV3C_LAUNCHES";
 
 /// Where a command writes: one call per message, without the line end.
 pub trait Io {
@@ -284,6 +296,13 @@ fn event_line(name: &str, exit_code: Option<i32>, object: &str) -> String {
     line
 }
 
+/// The --events line for a notice of the cockpit's client, such as a daemon replaced.
+pub fn notice_event(text: &str) -> String {
+    let fields = serde_json::to_string(&serde_json::json!({ "text": text }))
+        .unwrap_or_else(|_| "{}".to_owned());
+    event_line("notice", None, &fields)
+}
+
 const NOTHING_STARTED: &str = "Interrupted; nothing was started.";
 const INTERRUPTED: &str = "Interrupted.";
 const LEFT: &str = "Left without waiting for the result; \"ev3 c runs\" lists the run.";
@@ -426,6 +445,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             "runs" => self.runs(rest).await,
             "toolchain" => self.toolchain(rest).await,
             "get" => self.get(rest).await,
+            "watch" => self.watch(rest).await,
             other => Err(Stop::Usage(format!("unknown command \"{other}\""))),
         }
     }
@@ -588,7 +608,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             // `self` and `stop` again. The start comes first, so it is told before the end.
             tokio::select! {
                 biased;
-                Some(start) = started.recv() => self.event("started", &StartedEvent { start: &start }),
+                Some(start) = started.recv() => self.tell_started(&start, &launches),
                 outcome = &mut run => break outcome,
                 () = self.interrupts.next() => {
                     if stopping {
@@ -608,7 +628,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         };
         drop(stop);
         while let Ok(start) = started.try_recv() {
-            self.event("started", &StartedEvent { start: &start });
+            self.tell_started(&start, &launches);
         }
 
         let outcome = match outcome {
@@ -696,7 +716,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
     async fn list_runs(&mut self, rest: &[String]) -> Result<Report, Stop> {
         let project = self.project_config(&self.project_dir(rest, 0)?)?.name;
         let (_connection, handle) = self.brick().await?;
-        let launches = Launches::new();
+        let launches = self.known_launches();
         let runs = interruptible(
             self.interrupts,
             list_runs(&handle.port, &handle.reader, &project, &launches),
@@ -724,6 +744,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
                     .map(|summary| RunEntryJson {
                         run: summary.run,
                         record: summary.record.as_ref().map(record_json),
+                        started_at: summary.started_at.map(iso_time),
                     })
                     .collect(),
             },
@@ -740,7 +761,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         let dir = self.project_dir(&args[1..], 0)?;
         let project = self.project_config(&dir)?.name;
         let (_connection, handle) = self.brick().await?;
-        let launches = Launches::new();
+        let launches = self.known_launches();
         // A run number of at most nine digits always fits.
         let run = i64::try_from(run).unwrap_or(i64::MAX);
         let result = interruptible(
@@ -952,12 +973,162 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
         }
     }
 
-    /// Connects to the cockpit and holds the brick the options name. The connection lasts as
-    /// long as the caller keeps it.
-    async fn brick(&mut self) -> Result<(C::Connection, Handle<C>), Stop> {
+    /// Tells a run's start under --events, with the launch ID the run took.
+    fn tell_started(&mut self, start: &StartReport, launches: &Launches) {
+        let launch = launches.entries().into_iter().next();
+        self.event(
+            "started",
+            &StartedEvent {
+                start,
+                started_at: launch.as_ref().map(|(_, at)| iso_time(*at)),
+                launch_id: launch.map(|(launch_id, _)| launch_id),
+            },
+        );
+    }
+
+    /// The runs `EV3C_LAUNCHES` names; none when it is unset or not such an object, which only
+    /// leaves start times unknown.
+    fn known_launches(&self) -> Launches {
+        let launches = Launches::new();
+        let given = self
+            .deps
+            .env
+            .get(LAUNCHES_VARIABLE)
+            .and_then(|text| serde_json::from_str::<HashMap<String, u64>>(text).ok())
+            .unwrap_or_default();
+        for (launch_id, millis) in given {
+            launches.insert(launch_id, UNIX_EPOCH + Duration::from_millis(millis));
+        }
+        launches
+    }
+
+    /// Follows the program state of the brick the options name, for a status bar, until an
+    /// interrupt. It never connects or holds a brick: one that is not online is told as such,
+    /// and the brick is chosen again whenever the bricks, the windows or the daemon change.
+    /// Each state is told once, when it differs from the one told before.
+    async fn watch(&mut self, rest: &[String]) -> Result<Report, Stop> {
+        if !rest.is_empty() {
+            return Err(Stop::Usage("\"watch\" takes no folder".to_owned()));
+        }
+        if self.options.mode == Mode::Json {
+            return Err(Stop::Usage(
+                "\"watch\" tells each change as it comes: use --events, or no option for text"
+                    .to_owned(),
+            ));
+        }
+        let connection = self.connect().await?;
+        let mut changes = connection.changes();
+        let mut told: Option<Watched> = None;
+        let mut followed: Option<Followed<PortOf<C>>> = None;
+        loop {
+            let chosen = match connection.view().await {
+                Ok(view) => online_brick(&self.options.brick, &view),
+                Err(error) => Err(error),
+            };
+            match chosen {
+                Ok(brick_id) if followed.as_ref().is_some_and(|f| f.brick_id == brick_id) => {}
+                Ok(brick_id) => {
+                    followed = None;
+                    let port = connection.port(&brick_id);
+                    match port.subscribe().await {
+                        Ok(events) => {
+                            let watched = watched_state(&brick_id, &port).await;
+                            self.tell(&mut told, watched);
+                            followed = Some(Followed {
+                                brick_id,
+                                port,
+                                events,
+                            });
+                        }
+                        Err(error) => {
+                            self.tell(&mut told, Watched::NoBrick(failure_of(error.into())));
+                        }
+                    }
+                }
+                Err(error) => {
+                    followed = None;
+                    self.tell(&mut told, Watched::NoBrick(failure_of(error)));
+                }
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    () = self.interrupts.next() => return report(&Empty {}, Vec::new(), EXIT_OK),
+                    // The brick's own events first: what it told before a change is still told.
+                    event = next_followed(&mut followed) => match (event, &followed) {
+                        (Some(BrickEvent::Program(state)), Some(f)) => {
+                            let watched = Watched::Program {
+                                brick_id: f.brick_id.clone(),
+                                running: state.running,
+                                run_seq: state.run_seq,
+                            };
+                            self.tell(&mut told, watched);
+                        }
+                        (Some(BrickEvent::Reconnected), Some(f)) => {
+                            let watched = watched_state(&f.brick_id, &f.port).await;
+                            self.tell(&mut told, watched);
+                        }
+                        // The subscription ended: choose again.
+                        _ => {
+                            followed = None;
+                            break;
+                        }
+                    },
+                    change = changes.recv() => match change {
+                        Some(()) => break,
+                        None => return Err(Stop::message("The connection to EVƎ Cockpit ended.")),
+                    },
+                }
+            }
+        }
+    }
+
+    /// Tells a state `watch` sees, unless it was the last one told.
+    fn tell(&mut self, told: &mut Option<Watched>, watched: Watched) {
+        if told.as_ref() == Some(&watched) {
+            return;
+        }
+        match &watched {
+            Watched::Program {
+                brick_id,
+                running,
+                run_seq,
+            } => {
+                if self.options.mode == Mode::Events {
+                    self.event(
+                        "program",
+                        &ProgramEvent {
+                            brick_id,
+                            running: *running,
+                            run_seq: *run_seq,
+                        },
+                    );
+                } else if *running {
+                    self.io.out(&format!(
+                        "{brick_id}: a program is running (start {run_seq})."
+                    ));
+                } else {
+                    self.io.out(&format!("{brick_id}: no program is running."));
+                }
+            }
+            Watched::NoBrick(failure) => {
+                if self.options.mode == Mode::Events {
+                    self.event("noBrick", &ErrorJson { error: failure });
+                } else {
+                    self.io.out(&format!("No brick: {}", failure.message));
+                }
+            }
+        }
+        *told = Some(watched);
+    }
+
+    /// Connects to the cockpit, under the name `EV3C_CLIENT_NAME` gives (EVƎ C's VS Code
+    /// extension names itself so), else one that says which command runs.
+    async fn connect(&mut self) -> Result<C::Connection, Stop> {
         let (name, kind) = match self.client {
             Client::Terminal => (
-                format!("ev3 c {} (terminal)", self.command),
+                non_empty(self.deps.env.get(CLIENT_NAME_VARIABLE).map(String::as_str))
+                    .unwrap_or_else(|| format!("ev3 c {} (terminal)", self.command)),
                 ClientKind::Addon,
             ),
             Client::Mcp { name } => (format!("{name} (EVƎ C MCP)"), ClientKind::Mcp),
@@ -969,12 +1140,19 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             channel: non_empty(self.deps.env.get("EV3_COCKPIT_CHANNEL").map(String::as_str)),
         };
         let deps = self.deps;
-        let connection = interruptible(
+        interruptible(
             self.interrupts,
             deps.connector.connect(&options),
             NOTHING_STARTED,
         )
-        .await??;
+        .await?
+        .map_err(Stop::from)
+    }
+
+    /// Connects to the cockpit and holds the brick the options name. The connection lasts as
+    /// long as the caller keeps it.
+    async fn brick(&mut self) -> Result<(C::Connection, Handle<C>), Stop> {
+        let connection = self.connect().await?;
         let handle = interruptible(
             self.interrupts,
             connection.brick(&self.options.brick),
@@ -1218,10 +1396,13 @@ struct NoRecordJson<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RunEntryJson<'a> {
     run: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     record: Option<RecordJson<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1289,6 +1470,66 @@ struct ConnectedEvent<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StartedEvent<'a> {
     start: &'a StartReport,
+    /// The run's launch ID and when this computer started it, which a caller keeps and hands
+    /// back in `EV3C_LAUNCHES`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launch_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramEvent<'a> {
+    brick_id: &'a str,
+    running: bool,
+    run_seq: u64,
+}
+
+/// The brick `watch` follows now, with its program subscription.
+struct Followed<P> {
+    brick_id: String,
+    port: P,
+    events: Subscription,
+}
+
+/// What `watch` tells: the program state of the brick it follows, or why it follows none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Watched {
+    Program {
+        brick_id: String,
+        running: bool,
+        run_seq: u64,
+    },
+    NoBrick(Failure),
+}
+
+async fn watched_state<P: BrickPort>(brick_id: &str, port: &P) -> Watched {
+    match port.program_state().await {
+        Ok(state) => Watched::Program {
+            brick_id: brick_id.to_owned(),
+            running: state.running,
+            run_seq: state.run_seq,
+        },
+        Err(error) => Watched::NoBrick(failure_of(error.into())),
+    }
+}
+
+/// The next event of the followed brick; never, while none is followed.
+async fn next_followed<P>(followed: &mut Option<Followed<P>>) -> Option<BrickEvent> {
+    match followed {
+        Some(followed) => followed.events.next().await,
+        None => pending().await,
+    }
+}
+
+fn failure_of(error: CockpitError) -> Failure {
+    Failure {
+        message: error.message,
+        code: error.code,
+        failure: error.failure,
+    }
 }

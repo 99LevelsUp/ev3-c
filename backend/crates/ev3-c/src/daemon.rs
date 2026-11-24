@@ -32,9 +32,11 @@ use ev3c_core::port::{
 };
 use tokio::sync::{broadcast, mpsc};
 
+use crate::cli::notice_event;
+
 use crate::cockpit::{
     BrickHandle, BrickInfo, ClientKind, ClientStatus, CockpitError, ConnectOptions, Connection,
-    Connector, resolve_brick, shown_bricks,
+    Connector, View, resolve_brick, shown_bricks,
 };
 
 /// Inline content of a file write is limited to this many bytes.
@@ -49,6 +51,10 @@ pub struct CockpitConnector {
     /// The cockpit's state root (where `install.json` and the channels live); the user's own
     /// when `None`. A test points it at a folder of its own.
     pub state_root: Option<PathBuf>,
+    /// The cockpit client's notices (a daemon replaced, a reconnect) go to standard output as
+    /// `notice` events instead of to standard error: under --events, standard error stays
+    /// quiet.
+    pub notices_as_events: bool,
 }
 
 impl Connector for CockpitConnector {
@@ -61,6 +67,7 @@ impl Connector for CockpitConnector {
         let options = options.clone();
         let daemon_args = self.daemon_args.clone();
         let state_root = self.state_root.clone();
+        let as_events = self.notices_as_events;
         async move {
             let paths = match state_root {
                 Some(root) => Paths::new(&root, options.channel.as_deref()),
@@ -79,7 +86,13 @@ impl Connector for CockpitConnector {
                 daemon_args,
                 // Without one, every question of the daemon is left unanswered (`keep`).
                 asker: None,
-                notice: Arc::new(|text: &str| eprintln!("{text}")),
+                notice: Arc::new(move |text: &str| {
+                    if as_events {
+                        println!("{}", notice_event(text));
+                    } else {
+                        eprintln!("{text}");
+                    }
+                }),
             })
             .await
             .map_err(cockpit_error)?;
@@ -103,6 +116,30 @@ impl Connection for CockpitConnection {
         &self,
         setting: &str,
     ) -> Result<BrickHandle<CockpitPort, CockpitPort>, CockpitError> {
+        let view = self.view().await?;
+        let wanted = resolve_brick(setting, &view.bricks, &view.shown)?;
+        // Without a hold: the brick is EVƎ C's own on this connection, held again after a
+        // reconnect and let go when the connection ends.
+        let brick = self
+            .cockpit
+            .call::<method::BricksConnect>(BricksConnectParams {
+                brick: Some(wanted),
+                hold: None,
+            })
+            .await
+            .map_err(cockpit_error)?;
+        let port = CockpitPort {
+            cockpit: self.cockpit.clone(),
+            brick_id: brick.brick_id.clone(),
+        };
+        Ok(BrickHandle {
+            brick_id: brick.brick_id,
+            reader: port.clone(),
+            port,
+        })
+    }
+
+    async fn view(&self) -> Result<View, CockpitError> {
         let bricks: Vec<BrickInfo> = self
             .cockpit
             .bricks()
@@ -129,27 +166,53 @@ impl Connection for CockpitConnection {
             ),
             Err(_) => Vec::new(),
         };
-        let wanted = resolve_brick(setting, &bricks, &shown)?;
-        // Without a hold: the brick is EVƎ C's own on this connection, held again after a
-        // reconnect and let go when the connection ends.
-        let brick = self
-            .cockpit
-            .call::<method::BricksConnect>(BricksConnectParams {
-                brick: Some(wanted),
-                hold: None,
-            })
-            .await
-            .map_err(cockpit_error)?;
-        let port = CockpitPort {
-            cockpit: self.cockpit.clone(),
-            brick_id: brick.brick_id.clone(),
-        };
-        Ok(BrickHandle {
-            brick_id: brick.brick_id,
-            reader: port.clone(),
-            port,
-        })
+        Ok(View { bricks, shown })
     }
+
+    fn port(&self, brick_id: &str) -> CockpitPort {
+        CockpitPort {
+            cockpit: self.cockpit.clone(),
+            brick_id: brick_id.to_owned(),
+        }
+    }
+
+    /// Forwards the cockpit's events that matter for choosing a brick. The task holds only
+    /// the event receiver, not the cockpit, so it never keeps the connection open; it ends
+    /// with the connection or once nobody listens.
+    fn changes(&self) -> mpsc::UnboundedReceiver<()> {
+        let mut heard = self.cockpit.events();
+        let (sender, receiver) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let changed = tokio::select! {
+                    () = sender.closed() => break,
+                    heard = heard.recv() => match heard {
+                        Ok(event) => is_change(&event),
+                        // Fell behind: something may have changed unheard.
+                        Err(broadcast::error::RecvError::Lagged(_)) => true,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                };
+                if changed && sender.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+        receiver
+    }
+}
+
+/// Whether a cockpit event may change which brick a setting names, or whether it is online.
+fn is_change(event: &CockpitEvent) -> bool {
+    matches!(
+        event,
+        CockpitEvent::Notification(
+            Notification::BricksChanged(_)
+                | Notification::BricksReconnected(_)
+                | Notification::DaemonShowsChanged(_)
+        ) | CockpitEvent::Reconnected(_)
+            | CockpitEvent::Lost(_)
+    )
 }
 
 /// A brick in the daemon's list, as far as choosing one needs it.

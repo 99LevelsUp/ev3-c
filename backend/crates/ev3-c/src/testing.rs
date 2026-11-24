@@ -12,9 +12,12 @@ use ev3c_core::brick::fake::{FakeBrick, FakeBrickPort, TestClock};
 use ev3c_core::build::brick_project_dir;
 use ev3c_core::toolchain::CompileResult;
 
+use tokio::sync::mpsc;
+
 use crate::cli::{CompileHook, Deps, Io};
 use crate::cockpit::{
-    BrickHandle, BrickInfo, CockpitError, ConnectOptions, Connection, Connector, resolve_brick,
+    BrickHandle, BrickInfo, CockpitError, ConnectOptions, Connection, Connector, View,
+    resolve_brick,
 };
 
 /// A new, empty folder below the system's temporary folder, with links resolved so it reads
@@ -51,6 +54,10 @@ pub(crate) struct FakeCockpit {
     pub brick_failure: Mutex<Option<CockpitError>>,
     /// Connections not yet dropped.
     pub open: AtomicUsize,
+    /// Reading the bricks fails with this while it is set (the daemon is gone).
+    pub view_failure: Mutex<Option<CockpitError>>,
+    /// Who hears [`FakeCockpit::changed`].
+    watchers: Mutex<Vec<mpsc::UnboundedSender<()>>>,
 }
 
 impl FakeCockpit {
@@ -66,6 +73,8 @@ impl FakeCockpit {
             connect_failure: Mutex::new(None),
             brick_failure: Mutex::new(None),
             open: AtomicUsize::new(0),
+            view_failure: Mutex::new(None),
+            watchers: Mutex::new(Vec::new()),
         });
         cockpit.add_brick(BRICK_ID, "AAA");
         cockpit
@@ -87,6 +96,24 @@ impl FakeCockpit {
 
     pub fn port(&self, brick_id: &str) -> FakeBrickPort {
         self.ports.lock().unwrap()[brick_id].clone()
+    }
+
+    /// Tells every connection's [`Connection::changes`] that something changed.
+    pub fn changed(&self) {
+        self.watchers
+            .lock()
+            .unwrap()
+            .retain(|watcher| watcher.send(()).is_ok());
+    }
+
+    /// Sets whether the brick `brick_id` is connected.
+    pub fn set_connected(&self, brick_id: &str, connected: bool) {
+        for brick in self.bricks.lock().unwrap().iter_mut() {
+            if brick.brick_id == brick_id {
+                brick.connected = connected;
+                brick.link_up = connected;
+            }
+        }
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -161,6 +188,26 @@ impl Connection for FakeConnection {
             port: port.clone(),
             reader: port,
         })
+    }
+
+    async fn view(&self) -> Result<View, CockpitError> {
+        if let Some(error) = self.0.view_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
+        Ok(View {
+            bricks: self.0.bricks.lock().unwrap().clone(),
+            shown: self.0.shown.lock().unwrap().clone(),
+        })
+    }
+
+    fn port(&self, brick_id: &str) -> FakeBrickPort {
+        self.0.port(brick_id)
+    }
+
+    fn changes(&self) -> mpsc::UnboundedReceiver<()> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.0.watchers.lock().unwrap().push(sender);
+        receiver
     }
 }
 

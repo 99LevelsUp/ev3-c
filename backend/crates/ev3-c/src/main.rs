@@ -48,7 +48,7 @@ async fn run() -> i32 {
             }
         }
     }
-    let deps = match deps() {
+    let mut deps = match deps() {
         Ok(deps) => deps,
         Err(message) => {
             eprintln!("ev3 c: {message}");
@@ -61,6 +61,7 @@ async fn run() -> i32 {
         return serve_stdio(deps).await;
     }
 
+    deps.connector.notices_as_events = wants_events(&argv);
     let (sender, receiver) = mpsc::unbounded_channel();
     if wants_events(&argv) {
         tokio::task::spawn_local(interrupts_from_stdin(sender.clone()));
