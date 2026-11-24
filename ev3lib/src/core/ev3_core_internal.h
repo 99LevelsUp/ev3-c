@@ -77,6 +77,10 @@ const char *ev3_core_sound_device(void);
 const char *ev3_core_analog_device(void);
 const char *ev3_core_uart_device(void);
 const char *ev3_core_iic_device(void);
+const char *ev3_core_lcd_device(void);
+
+/* The firmware library that holds the display fonts (EV3C_UI_LIBRARY in tests). */
+const char *ev3_core_ui_library(void);
 
 /* Writes `length` bytes to a device in one write(). Returns 0 or -1 with errno. */
 int ev3_core_device_write(const char *device, const void *data, size_t length);

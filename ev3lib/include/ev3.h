@@ -17,6 +17,7 @@
 #include "ev3/ev3_motor.h"
 #include "ev3/ev3_sensor.h"
 #include "ev3/ev3_ui.h"
+#include "ev3/ev3_lcd.h"
 #include "ev3/ev3_return.h"
 
 #endif /* EV3_H */
