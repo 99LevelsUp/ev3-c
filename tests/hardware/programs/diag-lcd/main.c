@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -42,6 +43,21 @@ int main(void)
     /* Horizontal stripes, 8 rows black, 8 rows white. */
     for (size_t row = 0; row < var.yres; row++) {
         memset(wrote + row * fix.line_length, (row / 8) % 2 ? 0x00 : 0xFF, fix.line_length);
+    }
+    /* Ask the launcher for the screen with .lcd and wait until it answers by removing it. */
+    {
+        const char *project = getenv("EV3C_PROJECT_DIR");
+        char marker[512];
+        int waited = 0;
+        if (project != NULL) {
+            snprintf(marker, sizeof marker, "%s/.lcd", project);
+            close(open(marker, O_WRONLY | O_CREAT, 0644));
+            while (access(marker, F_OK) == 0 && waited < 2000) {
+                ev3_sleep_ms(10);
+                waited += 10;
+            }
+            printf(".lcd answered after %d ms%s\n", waited, access(marker, F_OK) == 0 ? " (no answer)" : "");
+        }
     }
     memcpy(fb, wrote, size);
     ev3_sound_play_tone(880, 150);
