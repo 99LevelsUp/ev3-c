@@ -359,6 +359,16 @@ static void test_pid_marker(void)
     CHECK(read_file(run, text, sizeof text) == 4 && strcmp(text, "4321") == 0, ".run holds '%s'", text);
 }
 
+static void test_launch_file(void)
+{
+    char dir[300], launch[340], text[96];
+    fresh_dir(dir, sizeof dir, "run-launch");
+    path_of(launch, sizeof launch, dir, "launch");
+
+    CHECK(rf_write_launch(dir, "4f2a-launch") == 0, "launch write failed: %s", strerror(errno));
+    CHECK(read_file(launch, text, sizeof text) == 12 && strcmp(text, "4f2a-launch\n") == 0, "launch holds '%s'", text);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -380,6 +390,7 @@ int main(void)
     test_interrupted_result_write();
     test_launch_id();
     test_pid_marker();
+    test_launch_file();
 
     if (failures > 0) {
         fprintf(stderr, "test_runfolder: %d check(s) failed; files kept in %s\n", failures, root);

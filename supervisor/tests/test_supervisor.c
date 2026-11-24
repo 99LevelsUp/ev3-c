@@ -215,6 +215,15 @@ static int play(const char *scenario)
         mark("env", text);
         return 0;
     }
+    if (strcmp(scenario, "launch") == 0) {
+        char path[PATH_MAX], text[128];
+        program_file(path, sizeof path, "launch");
+        if (read_file(path, text, sizeof text) < 0) {
+            strcpy(text, "missing");
+        }
+        mark("seen", text);
+        return 0;
+    }
     if (strcmp(scenario, "ignore-term") == 0) {
         signal(SIGTERM, SIG_IGN);
         mark("ready", "");
@@ -505,6 +514,26 @@ static void test_sigkill(void)
     check_motor_stop_last(&b);
 }
 
+/* The run folder names its launch before the program starts; a run from the
+   brick menu, without .req, has no launch file. */
+static void test_launch_file_before_the_program_starts(void)
+{
+    brick b;
+    char text[128];
+    pid_t sup;
+    setup(&b, "launch");
+    write_file(b.req, "launch-5\n");
+    sup = start(&b, "launch", "keep=5", "cap=65536", 0);
+    CHECK(finish(sup, 5000) == 0, "supervisor should exit 0");
+    read_run_file(&b, 1, "seen", text, sizeof text);
+    CHECK(strcmp(text, "launch-5\n") == 0, "the program saw launch as '%s'", text);
+
+    sup = start(&b, "launch", "keep=5", "cap=65536", 0);
+    CHECK(finish(sup, 5000) == 0, "supervisor should exit 0");
+    read_run_file(&b, 2, "seen", text, sizeof text);
+    CHECK(strcmp(text, "missing") == 0, "a run without .req has no launch file: '%s'", text);
+}
+
 /* Started from the brick menu: relative folder with a trailing '/'. The
    program sees absolute folders, only 0-2 open, its own process group, and its project
    folder as the current folder. */
@@ -740,6 +769,7 @@ int main(int argc, char **argv)
     test_crash_signal_and_retention();
     test_sigkill();
     test_program_environment();
+    test_launch_file_before_the_program_starts();
     test_slot_end_with_sigterm_ignored();
     test_slot_end_kills_whole_group();
     test_program_end_kills_motor_grandchild();
