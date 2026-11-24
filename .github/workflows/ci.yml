@@ -38,20 +38,17 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
 
-            - name: Setup Node.js
-              uses: actions/setup-node@v4
-              with:
-                  node-version: 20
-                  cache: npm
+            - name: Rust toolchain
+              run: rustup toolchain install
 
-            - name: Install dependencies
-              run: npm ci
-
+            # The repository's build tasks are the Rust xtask in backend/.
             - name: Native tests
-              run: npm run test:native
+              working-directory: backend
+              run: cargo run --quiet -p xtask -- native-tests
 
             - name: Brick runtime build and ELF check
-              run: npm run build:runtime
+              working-directory: backend
+              run: cargo run --quiet -p xtask -- build-runtime
 
     backend:
         name: Rust backend (${{ matrix.os }})

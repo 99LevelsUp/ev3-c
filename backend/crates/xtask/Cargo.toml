@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The repository's own build tasks (`cargo run -p xtask -- <task>`): the brick runtime and the
+# native C tests. They obtain Zig and check ELF files through the core, as a student's build
+# does, so the runtime is built with the same compiler and target flags.
+
+[dependencies]
+ev3c-core = { path = "../core" }
+
+[lints]
+workspace = true

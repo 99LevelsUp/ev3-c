@@ -105,8 +105,8 @@
         "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node20 --external:vscode --outfile=out/extension.js",
         "test:unit": "node scripts/run-unit-tests.cjs",
         "test:ci": "npm run compile && npm run lint && npm run test:unit",
-        "test:native": "npm run compile && node scripts/run-native-tests.cjs",
-        "build:runtime": "npm run compile && node scripts/build-runtime.cjs",
+        "test:native": "cargo run --quiet --manifest-path backend/Cargo.toml -p xtask -- native-tests",
+        "build:runtime": "cargo run --quiet --manifest-path backend/Cargo.toml -p xtask -- build-runtime",
         "watch": "tsc --watch",
         "bundle:cli": "esbuild src/cli/main.ts --bundle --platform=node --target=node20 --outfile=out/ev3-c.js \"--banner:js=#!/usr/bin/env node\""
     },
