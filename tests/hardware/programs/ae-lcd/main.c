@@ -3,11 +3,12 @@
  * (a beep says the next one is up):
  *   1  the four fonts, each with its name
  *   2  shapes: a frame around the display, a line across, a circle, a filled
- *      circle, a filled rectangle with an inverted band through it
+ *      circle, and a filled rectangle with a wider inverted band through it:
+ *      white inside the rectangle, black where the band reaches past it
  *   3  a counter that counts to 50 in the large font, in place
  *   4  print and println: 30 numbered lines, so the display scrolls; the last
- *      line on the display is "line 30", and a letter with a diacritic shows
- *      as '?'
+ *      line on the display is "line 30", the top line is whole, and a letter
+ *      with a diacritic shows as "?"
  * It also prints to stdout what it drew.
  */
 #include <stdio.h>

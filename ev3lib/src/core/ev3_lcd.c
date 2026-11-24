@@ -382,16 +382,20 @@ static void scroll(int rows)
     memset(screen[EV3_LCD_HEIGHT - rows], 0, (size_t)rows * EV3_LCD_WIDTH);
 }
 
-/* Starts a new line at the cursor, scrolling when it would not fit. */
+/*
+ * Starts a new line at the cursor. When it would not fit, the display scrolls
+ * up by whole lines, as a terminal does, so the top line is never cut; rows
+ * below the last whole line stay empty.
+ */
 static void new_line(void)
 {
     int height = font_facts[font].height;
 
     cursor_x = 0;
     cursor_y += height;
-    if (cursor_y + height > EV3_LCD_HEIGHT) {
-        scroll(cursor_y + height - EV3_LCD_HEIGHT);
-        cursor_y = EV3_LCD_HEIGHT - height;
+    while (cursor_y + height > EV3_LCD_HEIGHT && cursor_y > 0) {
+        scroll(height);
+        cursor_y -= height;
     }
 }
 
