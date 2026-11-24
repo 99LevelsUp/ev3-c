@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import type { CompilerOverride } from '../core/toolchain/toolchainManager';
 
 // EVƎ C's settings. Their defaults live in package.json only.
 
@@ -14,7 +13,7 @@ export function brickSetting(): string {
 }
 
 /** The compiler path set by the author, or undefined to use the pinned, downloaded one. */
-export function toolchainOverride(): CompilerOverride | undefined {
+export function toolchainPath(): string | undefined {
     const value = vscode.workspace.getConfiguration('ev3-c').get<string>('toolchain.path')?.trim();
-    return value === undefined || value === '' ? undefined : { path: value, setting: SETTING_TOOLCHAIN_PATH };
+    return value === undefined || value === '' ? undefined : value;
 }

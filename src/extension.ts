@@ -1,67 +1,46 @@
-import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { connectCockpit, CockpitClient } from './cockpit/cockpitLink';
-import { BrickAccess, defaultCore, HostEnvironment, registerBrickCommands, registerProjectCommands } from './host/commands';
-import { CockpitSession } from './shared/cockpitSession';
-import { askPerson } from './host/questions';
-import { brickSetting, SETTING_BRICK } from './host/settings';
+import { CLIENT_NAME, Ev3c, findProgram, Spawn } from './backend/ev3c';
+import { HostEnvironment, launchesVariable, registerCommands } from './host/commands';
+import { brickSetting, SETTING_BRICK, toolchainPath } from './host/settings';
 import { ProgramStatusBar } from './host/statusBar';
 
-// Build and Check Toolchain work on their own. The brick commands reach the bricks through
-// EVƎ Cockpit's daemon; EVƎ C connects to it in the background at activation and again on
-// each brick command until a connection holds.
+// The extension is EVƎ C's UI: commands, the status bar, notifications and settings. All work
+// is done by the Rust program `ev3-c`, which it runs once per command (and once, for as long
+// as the window lasts, to follow the brick for the status bar). `ev3-c` reaches the bricks
+// through EVƎ Cockpit's daemon, under the name "EVƎ C (VS Code)".
 
-/** How EVƎ C names itself to the cockpit: other clients read it in `brick_busy` and `stoppedBy`. */
-export const CLIENT_NAME = 'EVƎ C (VS Code)';
-
-/** How EVƎ C reaches the cockpit's daemon; tests replace it. */
-export const cockpitConnector = { connect: connectCockpit };
+/** How the extension starts processes; tests replace it. */
+export const processes: { spawn?: Spawn } = {};
 
 export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('EVƎ C', { log: true });
     context.subscriptions.push(output);
-    const env: HostEnvironment = {
-        output,
-        packageRoot: context.extensionPath,
-        toolchainCacheDir: path.join(context.globalStorageUri.fsPath, 'toolchain'),
-        core: defaultCore,
-    };
-    context.subscriptions.push(...registerProjectCommands(env));
-
-    const version = String((context.extension?.packageJSON as { version?: unknown } | undefined)?.version ?? '0.0.0');
-    const session = new CockpitSession(async (): Promise<CockpitClient> => {
-        const client = await cockpitConnector.connect({ name: CLIENT_NAME, version });
-        client.onQuestion((question, { signal }) => askPerson(question, signal));
-        client.onNotice(text => {
-            output.warn(`EVƎ Cockpit: ${text}`);
-            void vscode.window.showWarningMessage(text);
-        });
-        output.info(`Connected to EVƎ Cockpit's daemon ${client.daemon.version ?? ''}`.trimEnd());
-        return client;
-    });
-    // Notifications EVƎ C shows reach the daemon's log too, under EVƎ C's name.
-    env.notice = (level, text) => {
-        void session.current()?.client.request('log/notice', { level, text }).catch(() => undefined);
-    };
-    const bricks: BrickAccess = {
-        current: () => session.brick(brickSetting()),
-        launches: new Map(),
-    };
-    const statusBar = new ProgramStatusBar(session);
+    const launches = new Map<string, string>();
+    const ev3c = new Ev3c(
+        () => findProgram(context.extensionPath),
+        () => {
+            const toolchain = toolchainPath();
+            return {
+                EV3C_PACKAGE_ROOT: context.extensionPath,
+                EV3C_CLIENT_NAME: CLIENT_NAME,
+                EV3C_BRICK: brickSetting(),
+                EV3C_LAUNCHES: launchesVariable(launches),
+                ...(toolchain !== undefined ? { EV3C_TOOLCHAIN: toolchain } : {}),
+            };
+        },
+        processes.spawn,
+    );
+    const env: HostEnvironment = { output, ev3c, launches };
+    const statusBar = new ProgramStatusBar(ev3c, output);
     context.subscriptions.push(
-        session,
         statusBar,
-        ...registerBrickCommands(env, bricks),
+        ...registerCommands(env),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration(SETTING_BRICK)) {
-                statusBar.update();
+                statusBar.restart();
             }
         }),
     );
-    // Connect now so the status bar shows the brick; a failure is told once and tried again by the next brick command.
-    session.ready().catch((error: unknown) => {
-        output.warn(`EVƎ C could not connect to EVƎ Cockpit yet: ${error instanceof Error ? error.message : String(error)}`);
-    });
 }
 
 export function deactivate(): void {

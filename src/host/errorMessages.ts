@@ -1,15 +1,14 @@
-import { brickErrorCode } from '../core';
-import { CockpitErrorCode, startFailure } from '../cockpit/cockpitLink';
+import { Ev3cError } from '../backend/ev3c';
 
-// What the author reads when a brick operation fails. Cockpit's errors carry a stable
-// `code`; each code EVƎ C can meet gets a sentence that says what to do. A daemon that
-// could not start says why in `failure`. Cockpit's own message follows in the output channel.
+// What the author reads when a command fails. `ev3-c` passes on the cockpit's stable error
+// `code`; each code EVƎ C can meet gets a sentence that says what to do. A daemon that could
+// not start says why in `failure`. The message itself follows in the output channel.
 
 const CONNECTION = 'The connection to the brick failed. Check the cable or the Bluetooth link in EVƎ Cockpit, then try again.';
 const COCKPIT = 'EVƎ Cockpit could not serve the request. Try again; if it repeats, reload the window.';
 
-/** Keyed by the contract's codes, so a code the cockpit renames or drops fails the build. */
-export const BRICK_ERROR_MESSAGES: Readonly<Partial<Record<CockpitErrorCode, string>>> = {
+/** By the cockpit contract's error codes. */
+export const BRICK_ERROR_MESSAGES: Readonly<Record<string, string>> = {
     not_connected: 'No brick is connected. Connect one in EVƎ Cockpit, or check the "ev3-c.brick" setting.',
     brick_not_found: 'EVƎ Cockpit knows no brick by the name or id in "ev3-c.brick". Check the setting.',
     brick_ambiguous: 'Several bricks match. Set "ev3-c.brick" to the id or a unique name of the brick EVƎ C should use.',
@@ -50,24 +49,24 @@ export const START_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The message to show for a failed operation: the sentence for cockpit's error code when
- * there is one, otherwise the error's own message (the core's messages are written for
- * the author already).
+ * The message to show for a failed command: the sentence for the cockpit's error code when
+ * there is one, otherwise the error's own message (`ev3-c` writes those for the author).
  */
 export function userMessage(error: unknown): string {
     const own = error instanceof Error ? error.message : String(error);
-    const failure = startFailure(error);
-    if (failure !== undefined) {
-        const known = Object.hasOwn(START_FAILURE_MESSAGES, failure) ? START_FAILURE_MESSAGES[failure] : START_FAILURE_MESSAGES.failed;
-        // The library's message says which side to update, or carries the daemon's exit and log.
-        return `${known} ${own} (${failure})`;
+    if (!(error instanceof Ev3cError)) {
+        return own;
     }
-    const code = brickErrorCode(error);
+    if (error.failure !== undefined) {
+        const known = Object.hasOwn(START_FAILURE_MESSAGES, error.failure)
+            ? START_FAILURE_MESSAGES[error.failure] : START_FAILURE_MESSAGES.failed;
+        // The library's message says which side to update, or carries the daemon's exit and log.
+        return `${known} ${own} (${error.failure})`;
+    }
+    const code = error.code;
     if (code === 'brick_busy') {
-        const holder = holderOf(error);
-        if (holder !== undefined) {
-            return `${holder} is writing to the brick right now. Try again when it is done. (${code})`;
-        }
+        // The cockpit's own message names the client that holds the brick.
+        return `${own} Try again when it is done. (${code})`;
     }
     const known = code === undefined ? undefined : brickErrorMessage(code);
     return known === undefined ? own : `${known} (${code})`;
@@ -75,10 +74,5 @@ export function userMessage(error: unknown): string {
 
 /** The sentence for a cockpit error code, if EVƎ C has one. */
 export function brickErrorMessage(code: string): string | undefined {
-    return Object.hasOwn(BRICK_ERROR_MESSAGES, code) ? BRICK_ERROR_MESSAGES[code as CockpitErrorCode] : undefined;
-}
-
-function holderOf(error: unknown): string | undefined {
-    const data = (error as { data?: { holder?: unknown } }).data;
-    return typeof data?.holder === 'string' ? data.holder : undefined;
+    return Object.hasOwn(BRICK_ERROR_MESSAGES, code) ? BRICK_ERROR_MESSAGES[code] : undefined;
 }

@@ -31,5 +31,4 @@ out/
 /.review-out/
 
 *.log
-/.cockpit-client/
 /backend/target/

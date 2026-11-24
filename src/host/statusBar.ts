@@ -1,116 +1,92 @@
 import * as vscode from 'vscode';
-import { Subscription } from '../core';
-import { isBrickOnline } from '../cockpit/cockpitLink';
-import { CockpitSession, Connected, resolveSetting } from '../shared/cockpitSession';
+import { Ev3c, Ev3cEvent } from '../backend/ev3c';
 import { COMMAND_IDS } from './commands';
-import { brickSetting } from './settings';
 
-// A status bar item that shows the user-slot state cockpit reports for the brick the
-// "ev3-c.brick" setting names. State events are changes only, so the state is asked once
-// after binding to a brick and again after every reconnect. Until a brick command has
-// connected EVƎ C to the cockpit, the item says so.
+// A status bar item that shows the program state of the brick the "ev3-c.brick" setting names.
+// It runs `ev3-c watch` for as long as it lives. That command only follows the brick and never
+// connects or holds one. When `watch` ends on its own (no cockpit, or the cockpit went away), the
+// item says so and starts it again after a pause. A change of the setting starts it anew.
 
 type Shown = 'running' | 'idle' | 'disconnected' | 'no-cockpit';
 
+/** How long to wait before following again after `watch` ended on its own. */
+export const RETRY_MS = 10_000;
+
 export class ProgramStatusBar implements vscode.Disposable {
     private readonly item: vscode.StatusBarItem;
-    private readonly sessionWatch: { dispose(): void };
-    private bricksWatch: { dispose(): void } | undefined;
-    private bound: { brickId: string; events: Promise<Subscription | undefined> } | undefined;
+    private watch: { stop(): void } | undefined;
+    private retry: NodeJS.Timeout | undefined;
+    private disposed = false;
 
-    constructor(private readonly session: CockpitSession) {
+    constructor(private readonly ev3c: Ev3c, private readonly output: vscode.LogOutputChannel) {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
         this.item.name = 'EVƎ C program';
-        this.sessionWatch = session.onChanged(connected => this.attach(connected));
-        this.attach(session.current());
+        this.show('no-cockpit');
         this.item.show();
+        this.start();
     }
 
-    /** Follows the brick the setting names now; called when bricks or the setting change. */
-    update(): void {
-        const connected = this.session.current();
-        if (connected === undefined) {
-            this.unbind();
-            this.show('no-cockpit');
-            return;
-        }
-        let brickId: string;
-        try {
-            brickId = resolveSetting(connected, brickSetting());
-        } catch {
-            this.unbind();
-            this.show('disconnected');
-            return;
-        }
-        const online = isBrickOnline(connected.client.bricks(), brickId);
-        if (this.bound?.brickId === brickId) {
-            // While the brick is away the port subscribes again by itself and says so.
-            if (!online) {
-                this.show('disconnected');
-            }
-            return;
-        }
-        this.unbind();
-        if (!online) {
-            this.show('disconnected');
-            return;
-        }
-        const { port } = connected.ports.get(brickId);
-        const events = port.onBrickEvent(event => {
-            if (event.kind === 'program') {
-                this.show(event.state.running ? 'running' : 'idle');
-            } else {
-                this.refresh(connected, brickId);
-            }
-        }).catch(() => {
-            // Not followable yet; the next change of the brick list tries again.
-            if (this.bound?.brickId === brickId) {
-                this.bound = undefined;
-                this.show('disconnected');
-            }
-            return undefined;
-        });
-        this.bound = { brickId, events };
-        this.refresh(connected, brickId);
+    /** Follows anew, for a changed "ev3-c.brick" setting. */
+    restart(): void {
+        this.stopWatching();
+        this.start();
     }
 
     dispose(): void {
-        this.unbind();
-        this.sessionWatch.dispose();
-        this.bricksWatch?.dispose();
+        this.disposed = true;
+        this.stopWatching();
         this.item.dispose();
     }
 
-    private attach(connected: Connected | undefined): void {
-        this.bricksWatch?.dispose();
-        if (connected !== undefined) {
-            // The bar follows the bricks and, for "active", the brick the cockpit's window shows.
-            const watches = [connected.client.onBricksChanged(() => this.update()), connected.shown.onChanged(() => this.update())];
-            this.bricksWatch = { dispose: () => watches.forEach(w => w.dispose()) };
-        } else {
-            this.bricksWatch = undefined;
+    private start(): void {
+        if (this.disposed) {
+            return;
         }
-        this.unbind();
-        this.update();
-    }
-
-    private refresh(connected: Connected, brickId: string): void {
-        connected.ports.get(brickId).port.programState().then(
-            state => {
-                if (this.bound?.brickId === brickId) {
-                    this.show(state.running ? 'running' : 'idle');
-                }
+        const watch = this.ev3c.follow(['watch'], event => this.heard(event));
+        this.watch = watch;
+        const ended = (why: string | undefined) => {
+            if (this.watch !== watch) {
+                return; // Stopped on purpose.
+            }
+            this.watch = undefined;
+            this.show('no-cockpit', why);
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.start();
+            }, RETRY_MS);
+            this.retry.unref?.();
+        };
+        watch.ended.then(
+            terminal => {
+                const error = terminal.error as { message?: unknown } | undefined;
+                ended(typeof error?.message === 'string' ? error.message : undefined);
             },
-            () => this.show('disconnected'),
+            (error: unknown) => ended(error instanceof Error ? error.message : String(error)),
         );
     }
 
-    private unbind(): void {
-        void this.bound?.events.then(events => events?.dispose());
-        this.bound = undefined;
+    private stopWatching(): void {
+        if (this.retry !== undefined) {
+            clearTimeout(this.retry);
+            this.retry = undefined;
+        }
+        const watch = this.watch;
+        this.watch = undefined;
+        watch?.stop();
     }
 
-    private show(shown: Shown): void {
+    private heard(event: Ev3cEvent): void {
+        if (event.event === 'program') {
+            this.show(event.running === true ? 'running' : 'idle');
+        } else if (event.event === 'noBrick') {
+            const error = event.error as { message?: unknown } | undefined;
+            this.show('disconnected', typeof error?.message === 'string' ? error.message : undefined);
+        } else if (event.event === 'notice') {
+            this.output.warn(`EVƎ Cockpit: ${String(event.text)}`);
+        }
+    }
+
+    private show(shown: Shown, why?: string): void {
         switch (shown) {
         case 'running':
             this.item.text = '$(play) EV3 C: running';
@@ -124,12 +100,12 @@ export class ProgramStatusBar implements vscode.Disposable {
             break;
         case 'disconnected':
             this.item.text = '$(debug-disconnect) EV3 C: no brick';
-            this.item.tooltip = 'No brick is connected, or several are. Connect one in EVƎ Cockpit, or set "ev3-c.brick".';
+            this.item.tooltip = `${why ?? 'No brick is connected.'} Connect one in EVƎ Cockpit, or set "ev3-c.brick".`;
             this.item.command = undefined;
             break;
         case 'no-cockpit':
             this.item.text = '$(debug-disconnect) EV3 C: not connected';
-            this.item.tooltip = 'EVƎ C connects to EVƎ Cockpit on the first brick command.';
+            this.item.tooltip = why === undefined ? 'EVƎ C is connecting to EVƎ Cockpit.' : `EVƎ C cannot reach EVƎ Cockpit: ${why}`;
             this.item.command = undefined;
             break;
         }
