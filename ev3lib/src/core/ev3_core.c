@@ -145,8 +145,14 @@ int ev3_core_device_write(const char *device, const void *data, size_t length)
     written = write(fd, data, length);
     saved = errno;
     close(fd);
-    if (written != (ssize_t)length) {
-        errno = written < 0 ? saved : EIO;
+    /*
+     * Only a failed write() is an error. The firmware's drivers carry a command
+     * out and still report fewer bytes: the PWM driver returns 0 for every
+     * command (d_pwm.c:2166-3033 never sets Lng) and the sound driver 0 for TONE
+     * and BREAK (d_sound.c:633-705).
+     */
+    if (written < 0) {
+        errno = saved;
         return -1;
     }
     return 0;
