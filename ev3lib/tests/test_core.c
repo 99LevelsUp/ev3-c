@@ -37,6 +37,9 @@ static char out_path[300];
 static char err_path[300];
 static char analog_path[300];
 static char uart_path[300];
+static char lcd_path[300];
+static char lcd_marker[300];
+static char ui_library_path[300];
 static char run_path[300];
 static char ret_path[320];
 static char returned_path[320];
@@ -194,6 +197,23 @@ static int scenario(const char *name)
         printf("%d\n", ev3_button_is_pressed(EV3_BUTTON_BACK));
         return 0;
     }
+    if (strcmp(name, "lcd") == 0) {
+        ev3_lcd_set_auto_update(false);
+        ev3_lcd_fill_rect(0, 0, 3, 1);
+        ev3_lcd_draw_pixel(4, 0, true);
+        ev3_lcd_draw_text(0, 10, "!");
+        ev3_lcd_set_font(EV3_FONT_TINY);
+        ev3_lcd_draw_text(30, 20, "\xC4\x8D"); /* a letter the fonts lack: one '?' */
+        ev3_lcd_update();
+        printf("%d %d %d\n", ev3_lcd_try_set_font((Ev3Font)4) == EV3_ERR_PARAM,
+               ev3_lcd_try_fill_rect(0, 0, -1, 2) == EV3_ERR_PARAM, ev3_lcd_try_set_cursor(178, 0) == EV3_ERR_PARAM);
+        return 0;
+    }
+    if (strcmp(name, "lcd-no-fonts") == 0) {
+        Ev3Result result = ev3_lcd_try_draw_text(0, 0, "x");
+        printf("%s|%s\n", ev3_error_string(result), ev3_error_message());
+        return 0;
+    }
     if (strcmp(name, "sensors") == 0) {
         Ev3ColorRgb rgb = ev3_sensor_read_rgb(EV3_PORT_2);
         int angle = 0;
@@ -220,9 +240,9 @@ static int scenario(const char *name)
 static int run_scenario_in(const char *name, int in_run)
 {
     char pwm_env[320], ui_env[320], motor_env[320], sound_env[320], project_env[320], run_env[320], returned_env[340];
-    char analog_env[320], uart_env[320];
+    char analog_env[320], uart_env[320], lcd_env[320], ui_library_env[320];
     char *argv[] = { (char *)self, "--scenario", (char *)name, NULL };
-    char *envp[] = { pwm_env, ui_env, motor_env, sound_env, project_env, returned_env, analog_env, uart_env,
+    char *envp[] = { pwm_env, ui_env, motor_env, sound_env, project_env, returned_env, analog_env, uart_env, lcd_env, ui_library_env,
                      in_run ? run_env : NULL, NULL };
     int status = -1;
     pid_t child;
@@ -236,6 +256,8 @@ static int run_scenario_in(const char *name, int in_run)
     snprintf(returned_env, sizeof returned_env, "EV3C_TEST_RETURNED=%s", returned_path);
     snprintf(analog_env, sizeof analog_env, "EV3C_ANALOG_DEVICE=%s", analog_path);
     snprintf(uart_env, sizeof uart_env, "EV3C_UART_DEVICE=%s", uart_path);
+    snprintf(lcd_env, sizeof lcd_env, "EV3C_LCD_DEVICE=%s", lcd_path);
+    snprintf(ui_library_env, sizeof ui_library_env, "EV3C_UI_LIBRARY=%s", ui_library_path);
     fflush(NULL);
     child = fork();
     if (child == 0) {
@@ -684,6 +706,106 @@ static void test_sensors_are_found_and_read_from_the_shared_memory(void)
     CHECK(strcmp(out, expected) == 0, "expected\n%sgot\n%s", expected, out);
 }
 
+static void put32(unsigned char *at, unsigned long value)
+{
+    put16(at, (int)(value & 0xFFFF));
+    put16(at + 2, (int)(value >> 16));
+}
+
+/*
+ * A stand-in for the firmware's libc_ui.so: a 32-bit little-endian ELF file
+ * whose .data holds the four font sheets (sizes from d_lcd.c FontInfo) under
+ * their symbols. Every sheet is blank but for a few rows of '!' and '?'.
+ */
+static void write_fake_ui_library(void)
+{
+    static const char strings[] = "\0normal_font_bits\0small_font_bits\0large_font_bits\0tiny_font_bits";
+    static const unsigned long name_at[4] = { 1, 18, 34, 50 };
+    static const unsigned long sheet[4] = { 16 * 1 * 9 * 6, 16 * 1 * 8 * 6, 16 * 2 * 16 * 6, 16 * 1 * 7 * 6 };
+    enum { DATA_AT = 64, DATA_ADDR = 0x1000 };
+    static unsigned char elf[8192];
+    unsigned long data_size = 0, sheet_at[4], strtab_at, symtab_at, shdr_at, total;
+
+    memset(elf, 0, sizeof elf);
+    for (int f = 0; f < 4; f++) {
+        sheet_at[f] = data_size;
+        data_size += sheet[f];
+    }
+    /* normal '!' (index 1): row 0 has the leftmost pixel, row 1 the eighth */
+    elf[DATA_AT + sheet_at[0] + 1] = 0x01;
+    elf[DATA_AT + sheet_at[0] + 1 + 16] = 0x80;
+    /* tiny '?' (index 31: column 15 of the second sheet row): row 0 has the fifth pixel */
+    elf[DATA_AT + sheet_at[3] + 15 + 1 * 7 * 16] = 0x10;
+
+    strtab_at = DATA_AT + data_size;
+    memcpy(elf + strtab_at, strings, sizeof strings);
+    symtab_at = (strtab_at + sizeof strings + 3) & ~3UL;
+    for (int f = 0; f < 4; f++) {
+        unsigned char *symbol = elf + symtab_at + 16 * (f + 1);
+        put32(symbol, name_at[f]);
+        put32(symbol + 4, DATA_ADDR + sheet_at[f]);
+        put32(symbol + 8, sheet[f]);
+        symbol[12] = 1; /* local object */
+        put16(symbol + 14, 1);
+    }
+    shdr_at = symtab_at + 16 * 5;
+    /* [1] .data, [2] .symtab linked to [3] .strtab */
+    put32(elf + shdr_at + 40 + 4, 1), put32(elf + shdr_at + 40 + 12, DATA_ADDR);
+    put32(elf + shdr_at + 40 + 16, DATA_AT), put32(elf + shdr_at + 40 + 20, data_size);
+    put32(elf + shdr_at + 80 + 4, 2), put32(elf + shdr_at + 80 + 16, symtab_at);
+    put32(elf + shdr_at + 80 + 20, 16 * 5), put32(elf + shdr_at + 80 + 24, 3), put32(elf + shdr_at + 80 + 36, 16);
+    put32(elf + shdr_at + 120 + 4, 3), put32(elf + shdr_at + 120 + 16, strtab_at);
+    put32(elf + shdr_at + 120 + 20, sizeof strings);
+    total = shdr_at + 4 * 40;
+
+    memcpy(elf, "\177ELF\001\001\001", 7);
+    put16(elf + 16, 3), put16(elf + 18, 40);
+    put32(elf + 0x20, shdr_at);
+    put16(elf + 0x28, 52), put16(elf + 0x2E, 40), put16(elf + 0x30, 4);
+    write_file(ui_library_path, elf, total);
+}
+
+static void test_the_display_draws_with_the_firmware_fonts_into_the_framebuffer(void)
+{
+    /*
+     * The framebuffer as d_lcd.c writes it: 128 rows of 60 bytes, three pixels a
+     * byte (bits 7-5, 4-2, 1-0), all of a pixel's bits set for black.
+     */
+    static unsigned char expected[60 * 128];
+    unsigned char actual[60 * 128 + 1];
+    unsigned char out[64];
+    size_t length;
+    struct stat st;
+
+    memset(expected, 0, sizeof expected);
+    expected[0] = 0xFF;            /* pixels 0-2 of row 0 */
+    expected[1] = 0x1C;            /* pixel 4 */
+    expected[10 * 60] = 0xE0;      /* '!' row 0: pixel 0 of row 10 */
+    expected[11 * 60 + 2] = 0x1C;  /* '!' row 1: pixel 7 of row 11 */
+    expected[20 * 60 + 11] = 0x1C; /* tiny '?' for the missing letter: pixel 34 of row 20 */
+
+    write_fake_ui_library();
+    write_file(lcd_path, "", 0);
+    unlink(lcd_marker);
+    CHECK(exited_ok(run_scenario("lcd")), "the lcd scenario should exit with 0");
+    length = read_file(lcd_path, actual, sizeof actual);
+    CHECK(bytes_equal(expected, sizeof expected, actual, length), "the framebuffer holds other bytes");
+    length = read_file(out_path, out, sizeof out);
+    CHECK(length == 6 && memcmp(out, "1 1 1\n", 6) == 0,
+          "font 4, a negative width and a cursor off the display are refused; got \"%.*s\"", (int)length,
+          (const char *)out);
+    /* No launcher answers in the test, so the request for the screen stays behind. */
+    CHECK(stat(lcd_marker, &st) == 0, "the program asks for the screen with .lcd in its project folder");
+    unlink(lcd_marker);
+
+    unlink(ui_library_path);
+    CHECK(exited_ok(run_scenario("lcd-no-fonts")), "the lcd-no-fonts scenario should exit with 0");
+    length = read_file(out_path, out, sizeof out - 1);
+    out[length] = '\0';
+    CHECK(strstr((const char *)out, "EV3_ERR_DEVICE|the brick's fonts cannot be read") == (const char *)out,
+          "without the firmware's library text fails with EV3_ERR_DEVICE; got \"%s\"", (const char *)out);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--scenario") == 0) {
@@ -707,6 +829,9 @@ int main(int argc, char **argv)
     snprintf(err_path, sizeof err_path, "%s/err", root);
     snprintf(analog_path, sizeof analog_path, "%s/analog", root);
     snprintf(uart_path, sizeof uart_path, "%s/uart", root);
+    snprintf(lcd_path, sizeof lcd_path, "%s/lcd", root);
+    snprintf(ui_library_path, sizeof ui_library_path, "%s/libc_ui.so", root);
+    snprintf(lcd_marker, sizeof lcd_marker, "%s/.lcd", project_path);
     snprintf(run_path, sizeof run_path, "%s/run", root);
     snprintf(ret_path, sizeof ret_path, "%s/ret", run_path);
     snprintf(returned_path, sizeof returned_path, "%s/results.csv", project_path);
@@ -734,8 +859,12 @@ int main(int argc, char **argv)
     test_a_try_call_returns_the_code_and_says_why();
     test_a_run_returns_when_the_motors_are_done();
     test_sensors_are_found_and_read_from_the_shared_memory();
+    test_the_display_draws_with_the_firmware_fonts_into_the_framebuffer();
 
     unlink(bak_path);
+    unlink(lcd_marker);
+    unlink(lcd_path);
+    unlink(ui_library_path);
     unlink(ret_path);
     rmdir(run_path);
     {

@@ -20,6 +20,8 @@ static const char *sound_device = "/dev/lms_sound";
 static const char *analog_device = "/dev/lms_analog";
 static const char *uart_device = "/dev/lms_uart";
 static const char *iic_device = "/dev/lms_iic";
+static const char *lcd_device = "/dev/fb0";
+static const char *ui_library = "/home/root/lms2012/sys/lib/libc_ui.so";
 static const char *project_dir;
 static const char *run_dir;
 
@@ -54,6 +56,8 @@ void ev3_core_init(void)
     analog_device = env_or("EV3C_ANALOG_DEVICE", "/dev/lms_analog");
     uart_device = env_or("EV3C_UART_DEVICE", "/dev/lms_uart");
     iic_device = env_or("EV3C_IIC_DEVICE", "/dev/lms_iic");
+    lcd_device = env_or("EV3C_LCD_DEVICE", "/dev/fb0");
+    ui_library = env_or("EV3C_UI_LIBRARY", "/home/root/lms2012/sys/lib/libc_ui.so");
     project_dir = env_or("EV3C_PROJECT_DIR", NULL);
     run_dir = env_or("EV3C_RUN_DIR", NULL);
 
@@ -76,6 +80,16 @@ void ev3_core_exit(void)
      */
     static const unsigned char stop_all[] = { EV3_OP_PROGRAM_STOP };
     (void)ev3_core_pwm_write(stop_all, sizeof stop_all);
+}
+
+const char *ev3_core_ui_library(void)
+{
+    return ui_library;
+}
+
+const char *ev3_core_lcd_device(void)
+{
+    return lcd_device;
 }
 
 const char *ev3_core_project_dir(void)
