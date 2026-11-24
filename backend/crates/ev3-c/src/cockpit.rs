@@ -28,7 +28,7 @@ pub enum ClientKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectOptions {
-    /// Says where EVƎ C runs: other clients read it in `brick_busy` and `stoppedBy`.
+    /// Says where EVƎ C runs: other clients read it in `brick_busy` and `endedBy`.
     pub name: String,
     /// EVƎ C's version.
     pub version: String,

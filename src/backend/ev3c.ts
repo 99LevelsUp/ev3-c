@@ -8,7 +8,7 @@ import { StringDecoder } from 'node:string_decoder';
 // Standard input stays an open pipe while the command runs: a line `interrupt` stands for
 // Ctrl+C, and its end, when VS Code goes away, stops what the command started.
 
-/** How EVƎ C names itself to the cockpit: other clients read it in `brick_busy` and `stoppedBy`. */
+/** How EVƎ C names itself to the cockpit: other clients read it in `brick_busy` and `endedBy`. */
 export const CLIENT_NAME = 'EVƎ C (VS Code)';
 
 /** One line of `--events`: `event` first, then the event's fields. */

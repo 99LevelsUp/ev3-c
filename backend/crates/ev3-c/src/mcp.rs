@@ -725,6 +725,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_and_tools_list_never_reach_the_daemon() {
+        // EVƎ Cockpit's `ev3 mcp` starts this server at its own initialize to list its tools,
+        // and promises that starting and listing never start a daemon or connect bricks.
+        let s = Setup::new();
+        s.initialize(json!({ "protocolVersion": "2025-06-18", "capabilities": { "roots": {} }, "clientInfo": { "name": "Claude Code" } }))
+            .await;
+        s.request("tools/list", json!({})).await;
+        assert!(
+            s.cockpit.connects.lock().unwrap().is_empty(),
+            "initialize and tools/list connected to the daemon"
+        );
+    }
+
+    #[tokio::test]
     async fn the_tools_work_on_projects_and_repeat_none_of_evec_cockpits() {
         let s = Setup::new();
         let listed = s.request("tools/list", json!({})).await;
