@@ -119,12 +119,15 @@ impl Connection for CockpitConnection {
         let view = self.view().await?;
         let wanted = resolve_brick(setting, &view.bricks, &view.shown)?;
         // Without a hold: the brick is EVƎ C's own on this connection, held again after a
-        // reconnect and let go when the connection ends.
+        // reconnect and let go when the connection ends. With reuse: a brick another client
+        // has connected already is held as it is, so a command never waits for every channel
+        // (Bluetooth included) to connect again; only a person's explicit connect leaves it out.
         let brick = self
             .cockpit
             .call::<method::BricksConnect>(BricksConnectParams {
                 brick: Some(wanted),
                 hold: None,
+                reuse: Some(true),
             })
             .await
             .map_err(cockpit_error)?;

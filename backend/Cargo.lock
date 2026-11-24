@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "ev3-channel"
 version = "0.0.0"
-source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=cc3ee5c11914df73884f4116a922368db010a0e4#cc3ee5c11914df73884f4116a922368db010a0e4"
+source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=758e4a208d029a65b99a073191ddd1687cbadb11#758e4a208d029a65b99a073191ddd1687cbadb11"
 dependencies = [
  "bytes",
  "getrandom",
@@ -116,7 +116,7 @@ dependencies = [
 [[package]]
 name = "ev3-client"
 version = "0.0.0"
-source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=cc3ee5c11914df73884f4116a922368db010a0e4#cc3ee5c11914df73884f4116a922368db010a0e4"
+source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=758e4a208d029a65b99a073191ddd1687cbadb11#758e4a208d029a65b99a073191ddd1687cbadb11"
 dependencies = [
  "ev3-channel",
  "ev3-contract",
@@ -132,7 +132,7 @@ dependencies = [
 [[package]]
 name = "ev3-contract"
 version = "0.0.0"
-source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=cc3ee5c11914df73884f4116a922368db010a0e4#cc3ee5c11914df73884f4116a922368db010a0e4"
+source = "git+https://github.com/99LevelsUp/ev3-cockpit?rev=758e4a208d029a65b99a073191ddd1687cbadb11#758e4a208d029a65b99a073191ddd1687cbadb11"
 dependencies = [
  "hmac",
  "prettyplease",
