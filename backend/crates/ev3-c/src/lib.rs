@@ -7,6 +7,7 @@ pub mod cockpit;
 pub mod daemon;
 pub mod format;
 pub mod mcp;
+pub mod mcp_runs;
 pub mod paths;
 
 #[cfg(test)]

@@ -11,6 +11,9 @@
 //! - A project folder must lie inside the roots the MCP client declares, or inside the working
 //!   folder when it declares none: the tools build there and write returned files below it.
 //! - Cancelling a run stops the program, as Ctrl+C does in a terminal.
+//! - `start_project_run`, `read_project_run` and `stop_project_run` run a program without
+//!   waiting for its end: the agent reads its output while it runs (see
+//!   [`mcp_runs`](crate::mcp_runs)).
 //!
 //! Requests are handled side by side on one thread: a tool call asks the client for its roots
 //! and waits for the answer on the same standard input, and a cancel must reach a run that is
@@ -31,6 +34,7 @@ use ev3c_core::port::Clock;
 
 use crate::cli::{Client, Deps, Interrupts, Io, run_cli};
 use crate::cockpit::Connector;
+use crate::mcp_runs::{KEEP_ENDED, LiveRun, RunSink, text_from};
 use crate::paths::{file_uri_to_path, real_path, resolve};
 
 /// The protocol versions this server speaks; the first is the newest.
@@ -104,7 +108,22 @@ const BRICK: Property = Property {
     description: "The brick, by name or id. Default: the brick EVƎ Cockpit's VS Code window shows, else the only connected brick.",
 };
 
-pub const TOOLS: [Tool; 6] = [
+const RUN_HANDLE: Property = Property {
+    name: "run",
+    kind: Kind::Text,
+    description: "The run, as start_project_run gave it.",
+};
+
+/// The tools that read or stop a background run take no project and no command line.
+fn no_argv(_: &Map<String, Value>, _: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// How long `read_project_run` waits for something new by default, and at most.
+const READ_WAIT_DEFAULT: u64 = 10;
+const READ_WAIT_MAX: u64 = 30;
+
+pub const TOOLS: [Tool; 9] = [
     Tool {
         name: "build_project",
         description: "EVƎ C: Build an EVƎ C project (C for the LEGO EV3 with its original firmware) into the program, its launcher and the supervisor. Returns the artifacts and any compiler warnings; a failed build returns the compiler errors.",
@@ -180,6 +199,44 @@ pub const TOOLS: [Tool; 6] = [
             with_brick(args, argv)
         },
     },
+    Tool {
+        name: "start_project_run",
+        description: "EVƎ C: Build an EVƎ C project, upload it and start it on the brick, and return as soon as the program runs, with a run handle, without waiting for its end. Read its output while it runs, and its result at the end, with read_project_run; stop it with stop_project_run. A failed build or start returns the error instead.",
+        properties: &[PROJECT, BRICK],
+        required: &["project"],
+        argv: |args, project| with_brick(args, vec!["run".to_owned(), project.to_owned()]),
+    },
+    Tool {
+        name: "read_project_run",
+        description: "EVƎ C: Read a run start_project_run started: its stdout and stderr from the given offsets on, whether the program still runs, and once it has ended its result (how it ended, the files it returned; the output is not repeated there). Pass back the outOffset and errOffset the last read returned to get only what is new. While the program runs and nothing is new, it waits up to wait_seconds (default 10, at most 30).",
+        properties: &[
+            RUN_HANDLE,
+            Property {
+                name: "out_offset",
+                kind: Kind::WholeNumber { minimum: 0 },
+                description: "Where the stdout to return starts: the outOffset of the last read; 0 or none from the start.",
+            },
+            Property {
+                name: "err_offset",
+                kind: Kind::WholeNumber { minimum: 0 },
+                description: "Where the stderr to return starts: the errOffset of the last read; 0 or none from the start.",
+            },
+            Property {
+                name: "wait_seconds",
+                kind: Kind::WholeNumber { minimum: 0 },
+                description: "How long to wait for new output or the end while the program runs: 0 answers at once; default 10, at most 30.",
+            },
+        ],
+        required: &["run"],
+        argv: no_argv,
+    },
+    Tool {
+        name: "stop_project_run",
+        description: "EVƎ C: Stop a run start_project_run started, as Ctrl+C does in a terminal. Its result then comes with read_project_run.",
+        properties: &[RUN_HANDLE],
+        required: &["run"],
+        argv: no_argv,
+    },
 ];
 
 fn with_brick(args: &Map<String, Value>, mut argv: Vec<String>) -> Vec<String> {
@@ -239,6 +296,45 @@ fn tool_error(text: impl Into<String>) -> Value {
     json!({ "content": [{ "type": "text", "text": text.into() }], "isError": true })
 }
 
+/// A tool's answer: the object as text and as structured content; an error when it has one.
+fn tool_result(value: Map<String, Value>) -> Value {
+    let is_error = value.contains_key("error");
+    let value = Value::Object(value);
+    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": value,
+        "isError": is_error,
+    })
+}
+
+/// Waits until `ready` holds for the run, or `limit` has passed; without a limit, until it
+/// holds.
+async fn wait_for(
+    run: &Rc<RefCell<LiveRun>>,
+    ready: impl Fn(&LiveRun) -> bool,
+    limit: Option<Duration>,
+) {
+    let deadline = limit.map(|limit| tokio::time::Instant::now() + limit);
+    loop {
+        let changed = run.borrow().changed.clone();
+        let mut notified = std::pin::pin!(changed.notified());
+        // Registered before the check, so a change right after it still wakes this wait.
+        notified.as_mut().enable();
+        if ready(&run.borrow()) {
+            return;
+        }
+        match deadline {
+            Some(deadline) => {
+                if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                    return;
+                }
+            }
+            None => notified.await,
+        }
+    }
+}
+
 /// Keys requests by id as JavaScript's `String(id)` does, so `1` and `"1"` are one id.
 fn id_key(id: &Value) -> String {
     match id {
@@ -255,6 +351,9 @@ struct State {
     asked: HashMap<String, oneshot::Sender<Value>>,
     /// The Ctrl+C of each running tool call, by request id.
     cancels: HashMap<String, mpsc::UnboundedSender<()>>,
+    /// Runs start_project_run started, oldest first: those still going and the last ended.
+    runs: Vec<(String, Rc<RefCell<LiveRun>>)>,
+    next_run: u64,
 }
 
 pub struct McpServer<C, K> {
@@ -263,7 +362,7 @@ pub struct McpServer<C, K> {
     state: RefCell<State>,
 }
 
-impl<C: Connector, K: Clock> McpServer<C, K> {
+impl<C: Connector + 'static, K: Clock + 'static> McpServer<C, K> {
     /// A server that sends each message through `send`.
     pub fn new(deps: Rc<Deps<C, K>>, send: impl Fn(&Value) + 'static) -> Rc<Self> {
         Rc::new(McpServer {
@@ -275,6 +374,8 @@ impl<C: Connector, K: Clock> McpServer<C, K> {
                 next_ask: 0,
                 asked: HashMap::new(),
                 cancels: HashMap::new(),
+                runs: Vec::new(),
+                next_run: 0,
             }),
         })
     }
@@ -397,6 +498,11 @@ impl<C: Connector, K: Clock> McpServer<C, K> {
         if let Some(problem) = validate(tool, &args) {
             return tool_error(format!("Invalid arguments for {}: {problem}", tool.name));
         }
+        match tool.name {
+            "read_project_run" => return self.read_run(&args).await,
+            "stop_project_run" => return self.stop_run(&args),
+            _ => {}
+        }
         let given = args
             .get("project")
             .and_then(Value::as_str)
@@ -407,6 +513,9 @@ impl<C: Connector, K: Clock> McpServer<C, K> {
         };
 
         let mut argv = (tool.argv)(&args, &project.to_string_lossy());
+        if tool.name == "start_project_run" {
+            return self.start_run(argv).await;
+        }
         argv.push("--json".to_owned());
         let key = id_key(id);
         let (cancel, cancelled) = mpsc::unbounded_channel();
@@ -450,14 +559,176 @@ impl<C: Connector, K: Clock> McpServer<C, K> {
         if !notes.is_empty() {
             value.insert("messages".to_owned(), Value::Array(notes));
         }
-        let is_error = value.contains_key("error");
-        let value = Value::Object(value);
-        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-        json!({
-            "content": [{ "type": "text", "text": text }],
-            "structuredContent": value,
-            "isError": is_error,
-        })
+        tool_result(value)
+    }
+
+    /// `ev3 c run --events` in the background; answers once the program runs, or with the
+    /// error when the build or the start failed.
+    async fn start_run(&self, mut argv: Vec<String>) -> Value {
+        argv.push("--events".to_owned());
+        let (stop, stopped) = mpsc::unbounded_channel();
+        let run = Rc::new(RefCell::new(LiveRun::new(stop)));
+        let (id, client) = {
+            let mut state = self.state.borrow_mut();
+            state.next_run += 1;
+            let id = format!("run-{}", state.next_run);
+            // Keep the runs still going and the last few that ended.
+            let ended = state
+                .runs
+                .iter()
+                .filter(|(_, run)| !run.borrow().running())
+                .count();
+            let mut forget = ended.saturating_sub(KEEP_ENDED - 1);
+            state.runs.retain(|(_, run)| {
+                let drop_it = forget > 0 && !run.borrow().running();
+                forget -= usize::from(drop_it);
+                !drop_it
+            });
+            state.runs.push((id.clone(), run.clone()));
+            let client = Client::Mcp {
+                name: state.client_name.clone(),
+            };
+            (id, client)
+        };
+        let deps = self.deps.clone();
+        let task_run = run.clone();
+        tokio::task::spawn_local(async move {
+            let mut sink = RunSink(task_run.clone());
+            let code = run_cli(
+                &argv,
+                &mut sink,
+                &deps,
+                &mut Interrupts::new(stopped),
+                &client,
+            )
+            .await;
+            let mut run = task_run.borrow_mut();
+            if run.ended.is_none() {
+                // Ended before any object, as a wrong command line does: what it said.
+                let mut ended = Map::new();
+                ended.insert("exitCode".to_owned(), code.into());
+                ended.insert(
+                    "error".to_owned(),
+                    json!({ "message": run.messages.join("\n") }),
+                );
+                run.ended = Some(ended);
+            }
+            run.changed.notify_waiters();
+        });
+
+        wait_for(&run, |run| run.started.is_some() || !run.running(), None).await;
+        let run_now = run.borrow();
+        let Some(started) = run_now.started.clone() else {
+            // The build, the brick or the start failed: the run is over before it began.
+            let ended = run_now.ended.clone().unwrap_or_default();
+            drop(run_now);
+            self.state
+                .borrow_mut()
+                .runs
+                .retain(|(other, _)| *other != id);
+            return tool_result(ended);
+        };
+        let mut value = started;
+        value.insert("run".to_owned(), Value::String(id));
+        value.insert("running".to_owned(), Value::Bool(run_now.running()));
+        if !run_now.messages.is_empty() {
+            value.insert("messages".to_owned(), json!(run_now.messages));
+        }
+        tool_result(value)
+    }
+
+    /// The output of a background run from the given offsets on, and its end once it came.
+    async fn read_run(&self, args: &Map<String, Value>) -> Value {
+        let Some((id, run)) = self.find_run(args) else {
+            return tool_error(format!(
+                "There is no run {}: start_project_run gives the runs, and only the last {KEEP_ENDED} that ended are kept.",
+                args.get("run").and_then(Value::as_str).unwrap_or_default()
+            ));
+        };
+        let offset = |name: &str| {
+            args.get(name)
+                .and_then(whole)
+                .map_or(0, |number| number as usize)
+        };
+        let (out_offset, err_offset) = (offset("out_offset"), offset("err_offset"));
+        let wait = args
+            .get("wait_seconds")
+            .and_then(whole)
+            .map_or(READ_WAIT_DEFAULT, |seconds| seconds as u64)
+            .min(READ_WAIT_MAX);
+        wait_for(
+            &run,
+            |run| !run.running() || run.out.len() > out_offset || run.err.len() > err_offset,
+            Some(Duration::from_secs(wait)),
+        )
+        .await;
+
+        let run = run.borrow();
+        let (Some((out, out_next)), Some((err, err_next))) = (
+            text_from(&run.out, out_offset),
+            text_from(&run.err, err_offset),
+        ) else {
+            return tool_error(format!(
+                "out_offset {out_offset} or err_offset {err_offset} is not an offset a read of {id} gave."
+            ));
+        };
+        let more = out_next < run.out.len() || err_next < run.err.len();
+        let mut value = Map::new();
+        value.insert("run".to_owned(), Value::String(id));
+        value.insert("running".to_owned(), Value::Bool(run.running()));
+        value.insert("out".to_owned(), Value::String(out.to_owned()));
+        value.insert("err".to_owned(), Value::String(err.to_owned()));
+        value.insert("outOffset".to_owned(), out_next.into());
+        value.insert("errOffset".to_owned(), err_next.into());
+        if more {
+            // Cut at the read limit: the next read returns the rest at once.
+            value.insert("more".to_owned(), Value::Bool(true));
+        }
+        if !run.messages.is_empty() {
+            value.insert("messages".to_owned(), json!(run.messages));
+        }
+        if let Some(ended) = &run.ended {
+            let mut ended = ended.clone();
+            // The output came above, in pieces; the result does not repeat it.
+            if let Some(Value::Object(result)) = ended.get_mut("result") {
+                result.remove("out");
+                result.remove("err");
+            }
+            value.insert("ended".to_owned(), Value::Object(ended));
+        }
+        tool_result(value)
+    }
+
+    fn stop_run(&self, args: &Map<String, Value>) -> Value {
+        let Some((id, run)) = self.find_run(args) else {
+            return tool_error(format!(
+                "There is no run {}: start_project_run gives the runs.",
+                args.get("run").and_then(Value::as_str).unwrap_or_default()
+            ));
+        };
+        let run = run.borrow();
+        if !run.running() {
+            return tool_result(Map::from_iter([
+                ("run".to_owned(), Value::String(id)),
+                ("running".to_owned(), Value::Bool(false)),
+            ]));
+        }
+        // The run ends on its own once the stop is heard; it can only fail when it has ended.
+        let _ = run.stop.send(());
+        tool_result(Map::from_iter([
+            ("run".to_owned(), Value::String(id)),
+            ("stopping".to_owned(), Value::Bool(true)),
+        ]))
+    }
+
+    fn find_run(&self, args: &Map<String, Value>) -> Option<(String, Rc<RefCell<LiveRun>>)> {
+        let wanted = args.get("run").and_then(Value::as_str)?.trim();
+        self.state
+            .borrow()
+            .runs
+            .iter()
+            .find(|(id, _)| id == wanted)
+            .cloned()
     }
 
     /// The project folder, resolved and checked to lie inside the client's roots.
@@ -752,7 +1023,10 @@ mod tests {
                 "run_project",
                 "list_project_runs",
                 "show_project_run",
-                "delete_project_runs"
+                "delete_project_runs",
+                "start_project_run",
+                "read_project_run",
+                "stop_project_run"
             ]
         );
         for tool in tools {
@@ -761,12 +1035,21 @@ mod tests {
             let schema = &tool["inputSchema"];
             assert_eq!(schema["type"], "object");
             assert_eq!(schema["additionalProperties"], false);
+            // A background run is named by its handle; every other tool by its project.
+            let names_its = if name.ends_with("_project_run")
+                && name != "show_project_run"
+                && name != "start_project_run"
+            {
+                "run"
+            } else {
+                "project"
+            };
             assert!(
                 schema["required"]
                     .as_array()
                     .unwrap()
-                    .contains(&json!("project")),
-                "{name} works on a project"
+                    .contains(&json!(names_its)),
+                "{name} takes a {names_its}"
             );
         }
         assert_eq!(
@@ -806,6 +1089,186 @@ mod tests {
         assert_eq!(connects.len(), 1);
         assert_eq!(connects[0].name, "Claude Code (EVƎ C MCP)");
         assert_eq!(connects[0].kind, ClientKind::Mcp);
+    }
+
+    /// Runs `test` where the server can start its background runs, as `serve_stdio` does.
+    async fn on_one_thread<F: Future>(test: F) -> F::Output {
+        tokio::task::LocalSet::new().run_until(test).await
+    }
+
+    #[tokio::test]
+    async fn a_started_run_is_read_while_it_goes_and_its_end_comes_without_the_output_again() {
+        on_one_thread(async {
+            let s = Setup::new();
+            project(&s.cwd, "hello");
+            script_run(
+                &s.cockpit.port(BRICK_ID),
+                "hello",
+                2,
+                Ending {
+                    record: "end=program\nexit=0\n",
+                    out: "hi\n",
+                    returned: None,
+                    stops: true,
+                },
+            );
+            let started = s
+                .call("start_project_run", json!({ "project": "hello" }))
+                .await;
+            assert_eq!(started["isError"], false, "{started}");
+            let value = &started["structuredContent"];
+            assert_eq!(value["run"], "run-1");
+            assert_eq!(value["start"]["runSeq"], 1);
+
+            // Read as an agent does: from the offsets of the last read until the run has ended.
+            let (mut out, mut offsets) = (String::new(), json!({ "out": 0, "err": 0 }));
+            let mut value = Value::Null;
+            for _ in 0..20 {
+                let read = s
+                    .call(
+                        "read_project_run",
+                        json!({ "run": "run-1", "out_offset": offsets["out"], "err_offset": offsets["err"], "wait_seconds": 30 }),
+                    )
+                    .await;
+                assert_eq!(read["isError"], false, "{read}");
+                value = read["structuredContent"].clone();
+                out.push_str(value["out"].as_str().unwrap());
+                offsets = json!({ "out": value["outOffset"], "err": value["errOffset"] });
+                if value["running"] == false {
+                    break;
+                }
+            }
+            assert_eq!(value["running"], false, "{value}");
+            assert_eq!(out, "hi\n", "every piece once");
+            assert_eq!(value["ended"]["exitCode"], 0);
+            assert_eq!(value["ended"]["result"]["record"]["exit"], 0);
+            assert!(
+                value["ended"]["result"].get("out").is_none(),
+                "the output is not repeated: {value}"
+            );
+
+            let again = s
+                .call(
+                    "read_project_run",
+                    json!({ "run": "run-1", "out_offset": value["outOffset"], "err_offset": value["errOffset"] }),
+                )
+                .await;
+            assert_eq!(again["structuredContent"]["out"], "", "nothing new");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_started_run_stops_on_request_and_its_end_says_so() {
+        on_one_thread(async {
+            let s = Setup::new();
+            project(&s.cwd, "hello");
+            script_run(
+                &s.cockpit.port(BRICK_ID),
+                "hello",
+                2,
+                Ending {
+                    record: "end=slot\nsignal=15\n",
+                    out: "",
+                    returned: None,
+                    stops: false,
+                },
+            );
+            let started = s
+                .call("start_project_run", json!({ "project": "hello" }))
+                .await;
+            assert_eq!(started["structuredContent"]["running"], true, "{started}");
+            let stopped = s.call("stop_project_run", json!({ "run": "run-1" })).await;
+            assert_eq!(stopped["structuredContent"]["stopping"], true, "{stopped}");
+            let read = s
+                .call(
+                    "read_project_run",
+                    json!({ "run": "run-1", "wait_seconds": 30 }),
+                )
+                .await;
+            let value = &read["structuredContent"];
+            assert_eq!(value["running"], false, "{value}");
+            assert_eq!(value["ended"]["exitCode"], 130, "stopped: {value}");
+            assert!(
+                value["ended"]["result"].is_object(),
+                "the run's result, not no result: {value}"
+            );
+            assert!(
+                value["messages"]
+                    .as_array()
+                    .is_some_and(|said| said.contains(&json!("Stopping the program."))),
+                "{value}"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reading_an_unknown_run_or_from_an_offset_no_read_gave_is_refused() {
+        on_one_thread(async {
+            let s = Setup::new();
+            let unknown = s.call("read_project_run", json!({ "run": "run-9" })).await;
+            assert_eq!(unknown["isError"], true);
+            assert!(
+                text(&unknown).contains("There is no run run-9"),
+                "{unknown}"
+            );
+
+            project(&s.cwd, "hello");
+            script_run(
+                &s.cockpit.port(BRICK_ID),
+                "hello",
+                2,
+                Ending {
+                    record: "end=program\nexit=0\n",
+                    out: "ž\n",
+                    returned: None,
+                    stops: true,
+                },
+            );
+            s.call("start_project_run", json!({ "project": "hello" }))
+                .await;
+            s.call(
+                "read_project_run",
+                json!({ "run": "run-1", "wait_seconds": 30 }),
+            )
+            .await;
+            let inside = s
+                .call(
+                    "read_project_run",
+                    json!({ "run": "run-1", "out_offset": 1, "wait_seconds": 0 }),
+                )
+                .await;
+            assert_eq!(inside["isError"], true, "{inside}");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_start_that_fails_answers_with_the_error_and_keeps_no_run() {
+        on_one_thread(async {
+            let s = Setup::new();
+            project(&s.cwd, "hello");
+            s.cockpit.port(BRICK_ID).with(|brick| {
+                brick.start_error = Some("program_running".to_owned());
+            });
+            let started = s
+                .call("start_project_run", json!({ "project": "hello" }))
+                .await;
+            assert_eq!(started["isError"], true, "{started}");
+            assert!(
+                started["structuredContent"]["error"].is_object(),
+                "{started}"
+            );
+            let read = s
+                .call(
+                    "read_project_run",
+                    json!({ "run": "run-1", "wait_seconds": 0 }),
+                )
+                .await;
+            assert_eq!(read["isError"], true, "no run was kept: {read}");
+        })
+        .await;
     }
 
     #[tokio::test]
