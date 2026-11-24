@@ -729,6 +729,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_live_run_stopped_from_outside_still_finds_its_result() {
+        let setup = setup();
+        setup.on_run(|brick| {
+            let id = start_run_2(brick);
+            put_record(brick, 2, id.as_deref());
+        });
+        let on_output = |_: LiveEvent| {};
+        let port = setup.port.clone();
+        let stopper = async {
+            while !port.with(|brick| brick.running) {
+                tokio::task::yield_now().await;
+            }
+            port.stop_program().await.unwrap();
+        };
+        let (outcome, ()) = tokio::join!(setup.run_live(&on_output), stopper);
+        let (result, _) = result(outcome.unwrap());
+        assert_eq!(result.run, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_live_run_given_up_lets_its_follows_go() {
         let setup = setup();
         setup.on_run(|brick| {
