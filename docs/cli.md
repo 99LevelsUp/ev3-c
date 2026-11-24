@@ -33,7 +33,14 @@ ev3 c runs delete [--keep <n>] [folder]
                                      delete the run folders, all or all but the newest n
 ev3 c get <brick path> [local path]  download a file from the brick (default: its name, here)
 ev3 c toolchain                      check the compiler, downloading it when needed
+ev3 c watch                          follow the program state of the brick until Ctrl+C
 ```
+
+`watch` tells the brick's program state each time it changes, for a status bar: which brick,
+whether a program runs, or why no brick can be followed now. It never connects or holds a
+brick. It only follows the one the brick choice names while that brick is online, and it
+chooses again whenever the bricks, EVƎ Cockpit's windows or the daemon change. It prints
+text, or events with `--events`, but no single `--json` object.
 
 The folder holds the project's `ev3c.json`; without one, the current folder is used.
 
@@ -53,6 +60,9 @@ each one went, or why it could not be returned.
 | `--events` | Print one JSON event per line as the command proceeds (see below); wins over `--json`. |
 
 `EV3_COCKPIT_CHANNEL` selects a development or test daemon instead of the user's own.
+`EV3C_CLIENT_NAME` names the connection to the cockpit instead of
+`ev3 c <command> (terminal)`. Other clients read that name in `brick_busy`; EVƎ C's VS Code
+extension uses it to connect as `EVƎ C (VS Code)`.
 
 ## Exit codes
 
@@ -92,8 +102,16 @@ command ends with exactly one terminal event, the last line, which carries `exit
 | `diagnostics` | The compiler said something, warnings or errors. | `text` |
 | `built` | The build succeeded. | `project`, `artifacts` (as in `build --json`) |
 | `connected` | The brick is held through EVƎ Cockpit. | `brickId` |
-| `started` | `run`: the program was uploaded and started. | `start`: `outcome`, `runSeq`, `uploaded`, `skipped` |
+| `started` | `run`: the program was uploaded and started. | `start`: `outcome`, `runSeq`, `uploaded`, `skipped`; `launchId`, `startedAt` |
 | `stopping` | `run`: an interrupt asked the program to stop. | |
+| `program` | `watch`: the program state of the followed brick. | `brickId`, `running`, `runSeq` |
+| `noBrick` | `watch`: no brick can be followed now. | `error`: `message`, `code`? |
+| `notice` | EVƎ Cockpit's client says something, such as replacing an older daemon. | `text` |
+
+A run's start time is known only to the computer that started it. `startedAt` in `runs` and
+`runs show` comes from `EV3C_LAUNCHES`: a caller that keeps the `launchId` and `startedAt` of
+the `started` events hands them back as a JSON object of launch ID to milliseconds since 1970,
+for example `{"k3x9…": 1795000000123}`.
 
 The terminal event is the object `--json` would print, with `event` and `exitCode` added:
 
