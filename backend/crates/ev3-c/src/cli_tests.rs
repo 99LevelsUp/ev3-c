@@ -678,21 +678,34 @@ async fn get_downloads_one_brick_file_by_default_under_its_own_name_here() {
 
 #[tokio::test]
 async fn toolchain_reports_the_compiler_given_by_the_setting() {
-    let s = Setup::new();
+    let mut s = Setup::new();
     let checked = s.cli(&["toolchain", "--json"]).await;
     assert_eq!(checked.code, EXIT_OK);
     let printed = checked.json();
     assert_eq!(printed["origin"], "override");
     assert!(printed.get("version").is_none());
     let text = s.cli(&["toolchain"]).await.text();
-    assert!(
-        text.ends_with("(given by --toolchain or EV3C_TOOLCHAIN)"),
-        "{text}"
-    );
+    assert!(text.ends_with("(given by \"EV3C_TOOLCHAIN\")"), "{text}");
     let missing = s.cli(&["toolchain", "--toolchain", "/no/such/zig"]).await;
     assert_eq!(missing.code, EXIT_FAILED);
     assert!(
         missing.err[0].contains("\"--toolchain\" does not exist"),
+        "{}",
+        missing.err[0]
+    );
+
+    // From VS Code, a wrong path names the setting its user can change.
+    s.deps
+        .env
+        .insert("EV3C_TOOLCHAIN".to_owned(), "/no/such/zig".to_owned());
+    s.deps.env.insert(
+        "EV3C_TOOLCHAIN_SETTING".to_owned(),
+        "ev3-c.toolchain.path".to_owned(),
+    );
+    let missing = s.cli(&["toolchain"]).await;
+    assert_eq!(missing.code, EXIT_FAILED);
+    assert!(
+        missing.err[0].contains("\"ev3-c.toolchain.path\" does not exist"),
         "{}",
         missing.err[0]
     );

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { CLIENT_NAME, Ev3c, findProgram, Spawn } from './backend/ev3c';
 import { HostEnvironment, launchesVariable, registerCommands } from './host/commands';
-import { brickSetting, SETTING_BRICK, toolchainPath } from './host/settings';
+import { brickSetting, SETTING_BRICK, SETTING_TOOLCHAIN_PATH, toolchainPath } from './host/settings';
 import { ProgramStatusBar } from './host/statusBar';
 
 // The extension is EVƎ C's UI: commands, the status bar, notifications and settings. All work
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 EV3C_CLIENT_NAME: CLIENT_NAME,
                 EV3C_BRICK: brickSetting(),
                 EV3C_LAUNCHES: launchesVariable(launches),
-                ...(toolchain !== undefined ? { EV3C_TOOLCHAIN: toolchain } : {}),
+                ...(toolchain !== undefined ? { EV3C_TOOLCHAIN: toolchain, EV3C_TOOLCHAIN_SETTING: SETTING_TOOLCHAIN_PATH } : {}),
             };
         },
         processes.spawn,

@@ -242,5 +242,6 @@ test('the toolchain setting reaches ev3-c, and Check Toolchain says where the co
     activate(context);
     await vscode.commands.executeCommand('ev3-c.checkToolchain');
     assert.equal(fake.of('toolchain')[0].env.EV3C_TOOLCHAIN, 'C:\\zig\\zig.exe');
+    assert.equal(fake.of('toolchain')[0].env.EV3C_TOOLCHAIN_SETTING, 'ev3-c.toolchain.path', 'a wrong path names the setting');
     assert.deepEqual(messages('info'), ['EVƎ C\'s compiler is ready (set in "ev3-c.toolchain.path").']);
 });

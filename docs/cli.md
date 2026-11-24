@@ -64,7 +64,9 @@ each one went, or why it could not be returned.
 `EV3_COCKPIT_CHANNEL` selects a development or test daemon instead of the user's own.
 `EV3C_CLIENT_NAME` names the connection to the cockpit instead of
 `ev3 c <command> (terminal)`. Other clients read that name in `brick_busy`; EVƎ C's VS Code
-extension uses it to connect as `EVƎ C (VS Code)`.
+extension uses it to connect as `EVƎ C (VS Code)`. `EV3C_TOOLCHAIN_SETTING` names where
+`EV3C_TOOLCHAIN` came from, so that a wrong path points the user to it; the extension sets it to
+`ev3-c.toolchain.path`.
 
 ## Exit codes
 

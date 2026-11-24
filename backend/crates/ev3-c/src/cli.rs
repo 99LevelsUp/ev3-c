@@ -89,6 +89,9 @@ pub const CLIENT_NAME_VARIABLE: &str = "EV3C_CLIENT_NAME";
 /// milliseconds since 1970: a caller that keeps them from `started` events (EVƎ C's VS Code
 /// extension) hands them back, so `runs` and `runs show` can tell when those runs started.
 pub const LAUNCHES_VARIABLE: &str = "EV3C_LAUNCHES";
+/// The name of the setting `EV3C_TOOLCHAIN` comes from, for messages: the VS Code extension
+/// sets `ev3-c.toolchain.path`, which is what its user can change.
+pub const TOOLCHAIN_SETTING_VARIABLE: &str = "EV3C_TOOLCHAIN_SETTING";
 
 /// Where a command writes: one call per message, without the line end.
 pub trait Io {
@@ -162,6 +165,9 @@ struct Options {
     mode: Mode,
     brick: String,
     toolchain: Option<String>,
+    /// Where `toolchain` came from, as messages name it: `--toolchain`, else the setting
+    /// `EV3C_TOOLCHAIN_SETTING` names (the VS Code extension's), else `EV3C_TOOLCHAIN`.
+    toolchain_source: String,
     keep: Option<usize>,
 }
 
@@ -365,6 +371,11 @@ pub async fn run_cli<C: Connector, K: Clock>(
             .or_else(|| variable("EV3C_BRICK"))
             .unwrap_or_else(|| "active".to_owned()),
         toolchain: non_empty(parsed.toolchain.as_deref()).or_else(|| variable("EV3C_TOOLCHAIN")),
+        toolchain_source: if non_empty(parsed.toolchain.as_deref()).is_some() {
+            "--toolchain".to_owned()
+        } else {
+            variable(TOOLCHAIN_SETTING_VARIABLE).unwrap_or_else(|| "EV3C_TOOLCHAIN".to_owned())
+        },
         keep,
     };
 
@@ -896,7 +907,9 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             .await?
             .map_err(|error| Stop::message(format!("The compiler check stopped: {error}")))??;
         let how = match (&compiler.origin, &compiler.version) {
-            (CompilerOrigin::Override, _) => "given by --toolchain or EV3C_TOOLCHAIN".to_owned(),
+            (CompilerOrigin::Override, _) => {
+                format!("given by \"{}\"", self.options.toolchain_source)
+            }
             (_, version) => format!("version {}", version.as_deref().unwrap_or("?")),
         };
         report(
@@ -1174,7 +1187,7 @@ impl<C: Connector, K: Clock> Cli<'_, C, K> {
             .as_ref()
             .map(|path| CompilerOverride {
                 path: PathBuf::from(path),
-                setting: "--toolchain".to_owned(),
+                setting: self.options.toolchain_source.clone(),
             })
     }
 
