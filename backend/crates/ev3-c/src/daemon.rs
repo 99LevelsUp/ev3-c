@@ -743,6 +743,29 @@ mod tests {
     }
 
     #[test]
+    fn the_changes_watch_hears_are_the_bricks_the_windows_and_the_daemon() {
+        assert!(is_change(&bricks(&[("AAA", true)])));
+        assert!(is_change(&CockpitEvent::Notification(
+            Notification::DaemonShowsChanged(ev3_client::contract::ShowsChanged {
+                clients: Vec::new()
+            })
+        )));
+        assert!(is_change(&CockpitEvent::Notification(
+            Notification::BricksReconnected(ev3_client::contract::BrickIdPayload {
+                brick_id: "AAA".to_owned(),
+            })
+        )));
+        assert!(is_change(&CockpitEvent::Lost(ClientError::unavailable(
+            "gone"
+        ))));
+        assert!(!is_change(&CockpitEvent::Notification(
+            Notification::QuestionWithdrawn(ev3_client::contract::QuestionWithdrawn {
+                question_id: "q1".to_owned(),
+            })
+        )));
+    }
+
+    #[test]
     fn a_start_failure_keeps_its_code_and_says_why() {
         let error = cockpit_error(ClientError::start(
             ev3_client::Failure::MissingBinary,
