@@ -81,6 +81,20 @@ const char *ev3_port_name(Ev3Port port)
             return port_name_buffer;
         }
     }
+    if (port != 0 && (port & ~EV3_PORT_ALL) == 0) {
+        /* Several motor ports, as A+B: at most "A+B+C+D", which the buffer holds. */
+        size_t used = 0;
+        for (int i = 0; i < 4; i++) {
+            if (port & (EV3_PORT_A << i)) {
+                if (used > 0) {
+                    port_name_buffer[used++] = '+';
+                }
+                port_name_buffer[used++] = motors[i];
+            }
+        }
+        port_name_buffer[used] = '\0';
+        return port_name_buffer;
+    }
     snprintf(port_name_buffer, sizeof port_name_buffer, "%#x", (unsigned int)port);
     return port_name_buffer;
 }
@@ -110,7 +124,7 @@ Ev3Result ev3_check_motor_port(Ev3Port port, int *index)
             return EV3_OK;
         }
     }
-    return ev3_fail(EV3_ERR_PORT, "this reads one motor: pass one port, not several");
+    return ev3_fail(EV3_ERR_PORT, "ports %s are several; this takes one motor port", ev3_port_name(port));
 }
 
 Ev3Result ev3_check_sensor_port(Ev3Port port, int *index)

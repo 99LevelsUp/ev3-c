@@ -15,6 +15,8 @@
 #define EV3_OP_OUTPUT_POLARITY 0xA7
 #define EV3_OP_OUTPUT_STEP_SPEED 0xAE
 #define EV3_OP_OUTPUT_TIME_SPEED 0xAF
+#define EV3_OP_OUTPUT_STEP_SYNC  0xB0
+#define EV3_OP_OUTPUT_TIME_SYNC  0xB1
 #define EV3_OP_OUTPUT_CLR_COUNT  0xB2
 
 /* --- errors ------------------------------------------------------------------ */

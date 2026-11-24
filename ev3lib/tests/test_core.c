@@ -90,6 +90,19 @@ static int scenario(const char *name)
         ev3_motor_reset_position(EV3_PORT_A | EV3_PORT_D);
         return 0;
     }
+    if (strcmp(name, "motor-sync") == 0) {
+        ev3_motor_sync_start(EV3_PORT_B, EV3_PORT_C, 50, 0);
+        ev3_motor_sync_start_degrees(EV3_PORT_C, EV3_PORT_B, 40, 30, -720);
+        ev3_motor_sync_start_seconds(EV3_PORT_A, EV3_PORT_D, 20, 200, 1.5f);
+        ev3_motor_start_degrees_ramp(EV3_PORT_A, 60, 90, 360, 45, EV3_STOP_COAST);
+        ev3_motor_start_seconds_ramp(EV3_PORT_D, -30, 0.5f, 1.0f, 0.25f, EV3_STOP_BRAKE);
+        ev3_motor_sync_stop(EV3_PORT_B, EV3_PORT_C, EV3_STOP_BRAKE);
+        printf("%d %d %d %d\n", ev3_motor_try_sync_start(EV3_PORT_B, EV3_PORT_B, 50, 0) == EV3_ERR_PARAM,
+               ev3_motor_try_sync_start(EV3_PORT_B, EV3_PORT_C, 50, 201) == EV3_ERR_PARAM,
+               ev3_motor_try_sync_start(EV3_PORT_A | EV3_PORT_B, EV3_PORT_C, 50, 0) == EV3_ERR_PORT,
+               ev3_motor_try_start_degrees_ramp(EV3_PORT_A, 50, -10, 100, 10, EV3_STOP_BRAKE) == EV3_ERR_PARAM);
+        return 0;
+    }
     if (strcmp(name, "motor-busy") == 0) {
         printf("%d %d %d %d %d\n", ev3_motor_is_busy(EV3_PORT_B), ev3_motor_is_busy(EV3_PORT_A),
                ev3_motor_wait(EV3_PORT_A, 0), ev3_motor_wait(EV3_PORT_B, 30),
@@ -394,6 +407,37 @@ static void test_regulated_and_measured_motor_commands(void)
     CHECK(bytes_equal(expected, sizeof expected, actual, length), "motor device received other bytes");
 }
 
+static void test_sync_and_ramp_commands(void)
+{
+    /*
+     * STEPSYNC and TIMESYNC (lms2012.h): three bytes, one byte of padding, the
+     * 16-bit turn, two bytes of padding, the 32-bit amount, the brake byte and
+     * three bytes of padding. The driver takes the lower port as the one a
+     * positive turn speeds up, so a pair named right to left flips the turn.
+     */
+    static const unsigned char expected[] = {
+        0xB0, 0x06, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,                      /* B+C straight on, no end */
+        0xB0, 0x06, 0xD8, 0, 0xE2, 0xFF, 0, 0, 0xD0, 0x02, 0, 0, 1, 0, 0, 0,        /* left C: turn -30, 720 at -40 */
+        0xB1, 0x09, 20, 0, 0xC8, 0, 0, 0, 0xDC, 0x05, 0, 0, 1, 0, 0, 0,             /* A+D spin for 1500 ms */
+        0xAE, 0x01, 60, 0, 0x5A, 0, 0, 0, 0x68, 0x01, 0, 0, 0x2D, 0, 0, 0, 0, 0, 0, 0, /* A: 90 up, 360, 45 down, coast */
+        0xAF, 0x08, 0xE2, 0, 0xF4, 0x01, 0, 0, 0xE8, 0x03, 0, 0, 0xFA, 0, 0, 0, 1, 0, 0, 0, /* D: 500, 1000, 250 ms */
+        0xA3, 0x06, 0x01,                                                           /* stop B and C with brake */
+        0x02,                                                                       /* stop all when main() returns */
+    };
+    unsigned char actual[160];
+    unsigned char out[32];
+    size_t length;
+
+    write_file(pwm_path, "", 0);
+    CHECK(exited_ok(run_scenario("motor-sync")), "the motor-sync scenario should exit with 0");
+    length = read_file(pwm_path, actual, sizeof actual);
+    CHECK(bytes_equal(expected, sizeof expected, actual, length), "motor device received other bytes");
+    length = read_file(out_path, out, sizeof out);
+    CHECK(length == 8 && memcmp(out, "1 1 1 1\n", 8) == 0,
+          "one port twice, turn 201, two ports as one side and a negative ramp are refused; got \"%.*s\"", (int)length,
+          (const char *)out);
+}
+
 static void test_motor_state_reads_the_test_flags(void)
 {
     /* Reading the PWM device gives "<ready> <test> " (d_pwm.c Device1Read); test bit 1 is port B. */
@@ -677,6 +721,7 @@ int main(int argc, char **argv)
     test_back_takeover_creates_and_removes_the_request();
     test_back_state_follows_the_button_device();
     test_regulated_and_measured_motor_commands();
+    test_sync_and_ramp_commands();
     test_motor_state_reads_the_test_flags();
     test_motor_read_takes_speed_and_degrees_from_the_shared_motor_data();
     test_every_button_reads_from_the_button_device();

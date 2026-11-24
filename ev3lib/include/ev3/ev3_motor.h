@@ -126,6 +126,107 @@ void ev3_motor_start_seconds_at_(const char *file, int line, Ev3Port ports, int 
 #define ev3_motor_start_seconds(ports, speed, seconds) \
     ev3_motor_start_seconds_at_(__FILE__, __LINE__, (ports), (speed), (seconds))
 
+/* --- ramps -------------------------------------------------------------------- */
+
+/*
+ * Turns the motors with a smooth start and end: they speed up over the first
+ * up degrees, keep the speed for steady degrees and slow down over the last
+ * down degrees, then stop as mode says. The three amounts cannot be negative;
+ * a negative speed turns the other way. Returns when the motors are done.
+ */
+Ev3Result ev3_motor_try_run_degrees_ramp(Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode);
+void ev3_motor_run_degrees_ramp_at_(const char *file, int line, Ev3Port ports, int speed, int up, int steady, int down,
+                                    Ev3StopMode mode);
+#define ev3_motor_run_degrees_ramp(ports, speed, up, steady, down, mode) \
+    ev3_motor_run_degrees_ramp_at_(__FILE__, __LINE__, (ports), (speed), (up), (steady), (down), (mode))
+
+/* As ev3_motor_run_degrees_ramp(), in seconds. */
+Ev3Result ev3_motor_try_run_seconds_ramp(Ev3Port ports, int speed, float up, float steady, float down,
+                                         Ev3StopMode mode);
+void ev3_motor_run_seconds_ramp_at_(const char *file, int line, Ev3Port ports, int speed, float up, float steady,
+                                    float down, Ev3StopMode mode);
+#define ev3_motor_run_seconds_ramp(ports, speed, up, steady, down, mode) \
+    ev3_motor_run_seconds_ramp_at_(__FILE__, __LINE__, (ports), (speed), (up), (steady), (down), (mode))
+
+/* The two ramps above, returning at once; wait with ev3_motor_wait(). */
+Ev3Result ev3_motor_try_start_degrees_ramp(Ev3Port ports, int speed, int up, int steady, int down, Ev3StopMode mode);
+void ev3_motor_start_degrees_ramp_at_(const char *file, int line, Ev3Port ports, int speed, int up, int steady,
+                                      int down, Ev3StopMode mode);
+#define ev3_motor_start_degrees_ramp(ports, speed, up, steady, down, mode) \
+    ev3_motor_start_degrees_ramp_at_(__FILE__, __LINE__, (ports), (speed), (up), (steady), (down), (mode))
+
+Ev3Result ev3_motor_try_start_seconds_ramp(Ev3Port ports, int speed, float up, float steady, float down,
+                                           Ev3StopMode mode);
+void ev3_motor_start_seconds_ramp_at_(const char *file, int line, Ev3Port ports, int speed, float up, float steady,
+                                      float down, Ev3StopMode mode);
+#define ev3_motor_start_seconds_ramp(ports, speed, up, steady, down, mode) \
+    ev3_motor_start_seconds_ramp_at_(__FILE__, __LINE__, (ports), (speed), (up), (steady), (down), (mode))
+
+/* --- two motors together ------------------------------------------------------ */
+
+/*
+ * Drives two motors as a pair, such as the wheels of a robot: the firmware
+ * keeps them in step, so the robot goes straight or turns evenly.
+ *
+ * left and right are one port each. turn goes from -200 to 200 and says how
+ * the right motor follows the left one; a negative turn swaps their roles:
+ *     0         both motors at the same speed: straight on
+ *     1 to 99   the right motor slower: a curve to the right
+ *     100       the right motor stands still: a turn around the right wheel
+ *     101..199  the right motor backwards, slower than the left one
+ *     200       the right motor backwards as fast: a turn on the spot
+ *
+ * Degrees, rotations and seconds count the faster motor. Only one pair runs at
+ * a time: starting a pair with other motors stops the pair that ran.
+ */
+Ev3Result ev3_motor_try_sync_start(Ev3Port left, Ev3Port right, int speed, int turn);
+void ev3_motor_sync_start_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn);
+#define ev3_motor_sync_start(left, right, speed, turn) \
+    ev3_motor_sync_start_at_(__FILE__, __LINE__, (left), (right), (speed), (turn))
+
+/* Drives the pair by a number of degrees and returns when it is done; then the motors brake. */
+Ev3Result ev3_motor_try_sync_run_degrees(Ev3Port left, Ev3Port right, int speed, int turn, int degrees);
+void ev3_motor_sync_run_degrees_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn,
+                                    int degrees);
+#define ev3_motor_sync_run_degrees(left, right, speed, turn, degrees) \
+    ev3_motor_sync_run_degrees_at_(__FILE__, __LINE__, (left), (right), (speed), (turn), (degrees))
+
+/* As ev3_motor_sync_run_degrees(), in whole turns of the faster motor. */
+Ev3Result ev3_motor_try_sync_run_rotations(Ev3Port left, Ev3Port right, int speed, int turn, float rotations);
+void ev3_motor_sync_run_rotations_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn,
+                                      float rotations);
+#define ev3_motor_sync_run_rotations(left, right, speed, turn, rotations) \
+    ev3_motor_sync_run_rotations_at_(__FILE__, __LINE__, (left), (right), (speed), (turn), (rotations))
+
+/* Drives the pair for a time and returns when it is over; then the motors brake. */
+Ev3Result ev3_motor_try_sync_run_seconds(Ev3Port left, Ev3Port right, int speed, int turn, float seconds);
+void ev3_motor_sync_run_seconds_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn,
+                                    float seconds);
+#define ev3_motor_sync_run_seconds(left, right, speed, turn, seconds) \
+    ev3_motor_sync_run_seconds_at_(__FILE__, __LINE__, (left), (right), (speed), (turn), (seconds))
+
+/* The two runs above, returning at once; wait with ev3_motor_wait(left | right, ...). */
+Ev3Result ev3_motor_try_sync_start_degrees(Ev3Port left, Ev3Port right, int speed, int turn, int degrees);
+void ev3_motor_sync_start_degrees_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn,
+                                      int degrees);
+#define ev3_motor_sync_start_degrees(left, right, speed, turn, degrees) \
+    ev3_motor_sync_start_degrees_at_(__FILE__, __LINE__, (left), (right), (speed), (turn), (degrees))
+
+Ev3Result ev3_motor_try_sync_start_seconds(Ev3Port left, Ev3Port right, int speed, int turn, float seconds);
+void ev3_motor_sync_start_seconds_at_(const char *file, int line, Ev3Port left, Ev3Port right, int speed, int turn,
+                                      float seconds);
+#define ev3_motor_sync_start_seconds(left, right, speed, turn, seconds) \
+    ev3_motor_sync_start_seconds_at_(__FILE__, __LINE__, (left), (right), (speed), (turn), (seconds))
+
+/*
+ * Stops the pair. ev3_motor_stop(left | right, mode) does the same. A pair
+ * started with ev3_motor_sync_start() counts as busy until it is stopped, so do
+ * not wait for it with ev3_motor_wait().
+ */
+Ev3Result ev3_motor_try_sync_stop(Ev3Port left, Ev3Port right, Ev3StopMode mode);
+void ev3_motor_sync_stop_at_(const char *file, int line, Ev3Port left, Ev3Port right, Ev3StopMode mode);
+#define ev3_motor_sync_stop(left, right, mode) ev3_motor_sync_stop_at_(__FILE__, __LINE__, (left), (right), (mode))
+
 #ifdef __cplusplus
 }
 #endif
