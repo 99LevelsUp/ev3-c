@@ -45,13 +45,13 @@ int main(void)
     }
     memcpy(fb, wrote, size);
     ev3_sound_play_tone(880, 150);
-    for (int second = 1; second <= 8; second++) {
+    for (int quarter = 0; quarter <= 32; quarter++) {
         size_t changed = 0;
-        ev3_sleep_ms(1000);
         for (size_t i = 0; i < size; i++) {
             changed += fb[i] != wrote[i];
         }
-        printf("after %d s: %zu of %zu bytes changed\n", second, changed, size);
+        printf("after %4d ms: %zu of %zu bytes changed\n", quarter * 250, changed, size);
+        ev3_sleep_ms(250);
     }
     ev3_sound_play_tone(440, 150);
     return 0;
