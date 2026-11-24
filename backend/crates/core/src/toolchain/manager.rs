@@ -728,7 +728,13 @@ mod tests {
         let hosts: Vec<&str> = manifest.hosts.keys().map(String::as_str).collect();
         assert_eq!(
             hosts,
-            ["darwin-arm64", "darwin-x64", "linux-x64", "win32-x64"]
+            [
+                "darwin-arm64",
+                "darwin-x64",
+                "linux-arm64",
+                "linux-x64",
+                "win32-x64"
+            ]
         );
         for entry in manifest.hosts.values() {
             assert_eq!(entry.sha256.len(), 64);
