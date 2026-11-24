@@ -45,6 +45,28 @@ Motor and sensor ports have values of their own, so a sensor port given to a mot
 | `ev3_motor_start_degrees(ports, speed, degrees)`<br>`ev3_motor_start_seconds(ports, speed, seconds)` | Start the same commands and return at once. `ev3_motor_wait(ports, timeout_ms)` waits for the end and `ev3_motor_is_busy(ports)` asks whether it has come. |
 | `ev3_motor_get_position(port)`<br>`ev3_motor_get_speed(port)`<br>`ev3_motor_reset_position(ports)` | Read and reset a motor. |
 | `ev3_motor_set_polarity(ports, 1 \| -1 \| 0)` | Sets which way a positive speed turns. |
+| `ev3_motor_run_degrees_ramp(ports, speed, up, steady, down, mode)`<br>`ev3_motor_run_seconds_ramp(...)` | Turns them with a smooth start and end: speeding up over `up`, steady over `steady`, slowing down over `down`, then stopping as `mode` says. `ev3_motor_start_degrees_ramp` and `ev3_motor_start_seconds_ramp` return at once. |
+
+### Two motors together
+
+The `ev3_motor_sync_*` functions drive two motors as a pair, such as the wheels of a robot. The firmware keeps them in step, so the robot goes straight or turns evenly.
+
+```c
+ev3_motor_sync_run_rotations(EV3_PORT_B, EV3_PORT_C, 50, 0, 2.0f);   /* two turns straight on */
+ev3_motor_sync_run_degrees(EV3_PORT_B, EV3_PORT_C, 40, 100, 360);    /* around the right wheel */
+```
+
+`left` and `right` are one port each. `turn` goes from -200 to 200 and says how the right motor follows the left one: 0 straight on, 50 the right motor at half speed, 100 the right motor standing still, 200 the right motor backwards as fast (a turn on the spot). A negative turn swaps the roles. Degrees, rotations and seconds count the faster motor.
+
+| Function | What it does |
+|---|---|
+| `ev3_motor_sync_start(left, right, speed, turn)` | Drives the pair until it is stopped with `ev3_motor_sync_stop(left, right, mode)`. Do not wait for it with `ev3_motor_wait()`: it counts as busy until it is stopped. |
+| `ev3_motor_sync_run_degrees(left, right, speed, turn, degrees)`<br>`ev3_motor_sync_run_rotations(...)`<br>`ev3_motor_sync_run_seconds(...)` | Drive the pair by an amount and return when it is done; the motors brake at the end. |
+| `ev3_motor_sync_start_degrees(...)`<br>`ev3_motor_sync_start_seconds(...)` | Start the same and return at once; wait with `ev3_motor_wait(left \| right, timeout_ms)`. |
+
+Only one pair runs at a time: starting a pair with other motors stops the pair that ran.
+
+A run by degrees waits until the motor has turned that far. If no motor is plugged in, nothing turns and the run never ends; give `ev3_motor_wait()` a timeout where that matters.
 
 ## Sensors (`ev3/ev3_sensor.h`)
 
