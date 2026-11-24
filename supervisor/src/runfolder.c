@@ -105,6 +105,17 @@ int rf_take_launch_id(const char *project, char *id, size_t size)
     return 1;
 }
 
+int rf_write_launch(const char *dir, const char *launch_id)
+{
+    char path[4096], text[RF_LAUNCH_ID_MAX + 2];
+    if (snprintf(path, sizeof path, "%s/launch", dir) >= (int)sizeof path) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    snprintf(text, sizeof text, "%s\n", launch_id);
+    return replace_file(path, text);
+}
+
 int rf_write_pid_marker(const char *project, pid_t pid)
 {
     char path[4096], text[32];

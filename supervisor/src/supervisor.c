@@ -27,7 +27,8 @@
  *      this one. The lock is held until the result is written.
  *   4. If the VM still holds that .tok, write <folder>/.run with this PID.
  *   5. Apply the retention rule, take the next run number, create
- *      <folder>/runs/<n>/ (see runfolder.h).
+ *      <folder>/runs/<n>/ (see runfolder.h), and write the launch ID to
+ *      runs/<n>/launch, so EVƎ C knows its run's folder while it runs.
  *   6. If the slot has already ended, record that and start nothing.
  *      Otherwise start <folder>/prog with argv[0] "prog" in its own process
  *      group, stdout and stderr captured into out and err up to the cap, and
@@ -495,6 +496,11 @@ int main(int argc, char **argv)
     result.out_truncated = 0;
     result.err_truncated = 0;
     result.launch_id = have_launch ? launch : NULL;
+    /* Best effort: without it EVƎ C only loses the live output, and still finds
+       the run by the launch ID in res. */
+    if (have_launch) {
+        rf_write_launch(run_dir, launch);
+    }
 
     if (slot_alive) {
         run_program(project, run_dir, cap, &token, &result);

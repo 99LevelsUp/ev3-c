@@ -69,6 +69,14 @@ typedef struct {
  */
 int rf_take_launch_id(const char *project, char *id, size_t size);
 
+/*
+ * Writes <dir>/launch with the launch ID and a line end, through a temporary
+ * file and a rename. The supervisor writes it as soon as the run folder exists,
+ * before the program starts, so EVƎ C can tell which folder its run took and
+ * follow out and err while the program runs. Returns 0, or -1 with errno set.
+ */
+int rf_write_launch(const char *dir, const char *launch_id);
+
 /* Writes <project>/.run with the PID, through a temporary file and a rename. */
 int rf_write_pid_marker(const char *project, pid_t pid);
 
