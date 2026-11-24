@@ -313,7 +313,7 @@ mod tests {
     use crate::testutil::{repo_path, temp_dir};
 
     fn elf_fixture(name: &str) -> PathBuf {
-        repo_path("src/__tests__/fixtures/elf").join(name)
+        repo_path("backend/crates/core/fixtures/elf").join(name)
     }
 
     /// A package root with a fake runtime, a project folder, and a compiler path. The

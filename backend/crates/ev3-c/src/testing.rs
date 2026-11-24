@@ -239,7 +239,7 @@ pub(crate) fn compiler(diagnostics: &'static str, ok: bool) -> Arc<CompileHook> 
     Arc::new(move |request| {
         if ok {
             let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../src/__tests__/fixtures/elf/static-armv5te.elf");
+                .join("../core/fixtures/elf/static-armv5te.elf");
             let output = request
                 .cwd
                 .clone()

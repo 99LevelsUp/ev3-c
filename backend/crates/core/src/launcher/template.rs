@@ -22,7 +22,7 @@
 //! touches nothing outside its own project folder. It uses no project name: everything comes
 //! from the folder it was started from.
 //!
-//! The golden source for these bytes is src/__tests__/fixtures/launcher/launcher.lms; keep the
+//! The golden source for these bytes is backend/crates/core/fixtures/launcher/launcher.lms; keep the
 //! two in step (declaration order and sizes decide the local offsets).
 
 use serde::Serialize;
@@ -344,7 +344,7 @@ mod tests {
 
     fn golden_bytes() -> Vec<u8> {
         let hex = std::fs::read_to_string(repo_path(
-            "src/__tests__/fixtures/launcher/launcher.rbf.hex",
+            "backend/crates/core/fixtures/launcher/launcher.rbf.hex",
         ))
         .unwrap();
         hex.split_whitespace()

@@ -1,5 +1,5 @@
 //! Cross-compiles C sources for the brick with `zig cc`. The target flags come from
-//! manifest.json, the single place that defines what a brick binary is.
+//! toolchain-manifest.json, the single place that defines what a brick binary is.
 
 use std::ffi::OsString;
 use std::path::PathBuf;

@@ -1,5 +1,5 @@
 //! Obtains the pinned cross-compiler. The compiler is not bundled with EVƎ C: it is
-//! downloaded on first use from the URL in manifest.json, verified against the pinned SHA-256
+//! downloaded on first use from the URL in toolchain-manifest.json, verified against the pinned SHA-256
 //! before it is extracted, and kept in a cache folder the host supplies. A host setting can
 //! point at a compiler instead, which skips the download.
 
@@ -15,11 +15,11 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// manifest.json of the TypeScript backend, the single place that pins the compiler and
+/// toolchain-manifest.json, the single place that pins the compiler and
 /// defines what a brick binary is. It is read from there, not copied.
 const MANIFEST_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../src/core/toolchain/manifest.json"
+    "/toolchain-manifest.json"
 ));
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

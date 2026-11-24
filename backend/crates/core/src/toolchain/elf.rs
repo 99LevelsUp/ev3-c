@@ -357,7 +357,7 @@ mod tests {
 
     // How each fixture was built is recorded in fixtures/elf/README.md.
     fn fixture(name: &str) -> PathBuf {
-        repo_path("src/__tests__/fixtures/elf").join(name)
+        repo_path("backend/crates/core/fixtures/elf").join(name)
     }
 
     fn problems_of(name: &str) -> Vec<String> {

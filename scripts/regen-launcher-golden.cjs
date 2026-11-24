@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Regenerates the golden launcher bytes from src/__tests__/fixtures/launcher/launcher.lms
+ * Regenerates the golden launcher bytes from backend/crates/core/fixtures/launcher/launcher.lms
  * with LEGO's lmsasm assembler. Development-time only: it needs Java, and normal test runs
  * read the committed launcher.rbf.hex instead.
  *
@@ -15,7 +15,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const fixtures = path.join(__dirname, '..', 'src', '__tests__', 'fixtures', 'launcher');
+const fixtures = path.join(__dirname, '..', 'backend', 'crates', 'core', 'fixtures', 'launcher');
 const source = path.join(fixtures, 'launcher.lms');
 const golden = path.join(fixtures, 'launcher.rbf.hex');
 
