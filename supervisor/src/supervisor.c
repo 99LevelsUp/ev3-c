@@ -40,7 +40,7 @@
  *      Either way wait until the whole group is gone, then drain the output
  *      for at most 1 s and stop all motors once more.
  *   8. Write res through res.tmp and a rename (the completion record), remove
- *      .bak and .run, release the lock.
+ *      .bak, .lcd and .run, release the lock.
  *
  * Environment, for tests on a PC (the defaults are the brick's):
  *   EV3C_PROC_ROOT   where to look for the VM process, default /proc
@@ -418,7 +418,7 @@ close_files:
 int main(int argc, char **argv)
 {
     char project[PATH_MAX], path[PATH_MAX + 16], run_dir[PATH_MAX + 32];
-    char tok[PATH_MAX + 8], run_marker[PATH_MAX + 8], bak[PATH_MAX + 8];
+    char tok[PATH_MAX + 8], run_marker[PATH_MAX + 8], bak[PATH_MAX + 8], lcd[PATH_MAX + 8];
     char launch[RF_LAUNCH_ID_MAX + 1];
     const char *pwm, *lock_path;
     struct sigaction action;
@@ -455,6 +455,7 @@ int main(int argc, char **argv)
     snprintf(tok, sizeof tok, "%s/.tok", project);
     snprintf(run_marker, sizeof run_marker, "%s/.run", project);
     snprintf(bak, sizeof bak, "%s/.bak", project);
+    snprintf(lcd, sizeof lcd, "%s/.lcd", project);
 
     /* Taken before the lock wait, so a run that gives up on the lock does not
        leave its launch ID for a later, unrelated run. */
@@ -484,6 +485,7 @@ int main(int argc, char **argv)
     snprintf(path, sizeof path, "%s/runs", project);
     if (rf_start_run(path, &rule, 2 * cap, run_dir, sizeof run_dir, &result.number) != 0) {
         unlink(bak);
+        unlink(lcd);
         unlink(run_marker);
         return 4;
     }
@@ -501,10 +503,12 @@ int main(int argc, char **argv)
 
     if (rf_write_result_temp(run_dir, &result) != 0 || rf_commit_result(run_dir) != 0) {
         unlink(bak);
+        unlink(lcd);
         unlink(run_marker);
         return 5;
     }
     unlink(bak);
+    unlink(lcd);
     unlink(run_marker);
     close(lock);
     return 0;

@@ -3,17 +3,21 @@
 //!
 //! What it does, in order:
 //!   1. Build the project folder with FILENAME GET_FOLDERNAME, and every marker path as that
-//!      folder plus a short dot-name: .tok (slot token), .run (run marker), .bak (Back request).
-//!      The firmware resolves a bare dot-name against its own working directory, so the folder
-//!      is always spelled out.
-//!   2. Remove stale .run and .bak, delete .tok, then create .tok and keep it open for the whole
-//!      run. The supervisor watches the VM's open descriptor on .tok to notice the slot ending.
+//!      folder plus a short dot-name: .tok (slot token), .run (run marker), .bak (Back request),
+//!      .lcd (screen request). The firmware resolves a bare dot-name against its own working
+//!      directory, so the folder is always spelled out.
+//!   2. Remove stale .run, .bak and .lcd, delete .tok, then create .tok and keep it open for the
+//!      whole run. The supervisor watches the VM's open descriptor on .tok to notice the slot
+//!      ending.
 //!   3. Start the supervisor in the background, once, through SYSTEM (see
 //!      [`supervisor_arguments`]).
 //!   4. Wait up to 6 s for .run, or end the slot. Read the supervisor's PID from .run once and
 //!      build /proc/<pid>.
 //!   5. Every 100 ms test .run and /proc/<pid>, and set or clear the Back block when .bak
-//!      appears or disappears, so a program can take short presses of Back over.
+//!      appears or disappears, so a program can take short presses of Back over. When .lcd
+//!      appears, issue one UI_DRAW UPDATE, which ends the firmware's run animation (c_ui.c
+//!      cUiDraw sets RunScreenEnabled to 0 for a user slot), and remove .lcd as the answer; the
+//!      program then has the screen to itself.
 //!   6. End when .run is gone or the supervisor's process has disappeared, so a crashed
 //!      supervisor still ends the slot and the firmware stops the motors.
 //!
@@ -108,7 +112,7 @@ fn constant(value: u32) -> Operand {
 
 /// Assembles the launcher and keeps its layout, for inspection.
 pub fn assemble_launcher(options: &LauncherOptions) -> Result<AssembledImage, LauncherError> {
-    use sub::{file, filename, strings, ui_button};
+    use sub::{file, filename, strings, ui_button, ui_draw};
 
     let tail = format!(" {} &", supervisor_arguments(options)?);
     let mut t = ThreadBuilder::new();
@@ -116,6 +120,7 @@ pub fn assemble_launcher(options: &LauncherOptions) -> Result<AssembledImage, La
     t.data_string("Folder", FOLDER_SIZE)?;
     t.data_string("RunPath", PATH_SIZE)?;
     t.data_string("BakPath", PATH_SIZE)?;
+    t.data_string("LcdPath", PATH_SIZE)?;
     t.data_string("TokPath", PATH_SIZE)?;
     t.data_string("T1", COMMAND_SIZE)?;
     t.data_string("T2", COMMAND_SIZE)?;
@@ -143,6 +148,7 @@ pub fn assemble_launcher(options: &LauncherOptions) -> Result<AssembledImage, La
     for (marker, path) in [
         ("/.run", "RunPath"),
         ("/.bak", "BakPath"),
+        ("/.lcd", "LcdPath"),
         ("/.tok", "TokPath"),
     ] {
         t.emit(
@@ -159,6 +165,7 @@ pub fn assemble_launcher(options: &LauncherOptions) -> Result<AssembledImage, La
     // Clear stale markers and hold a fresh slot token.
     t.emit(op::FILE, &[file::REMOVE.into(), local("RunPath")]);
     t.emit(op::FILE, &[file::REMOVE.into(), local("BakPath")]);
+    t.emit(op::FILE, &[file::REMOVE.into(), local("LcdPath")]);
     t.emit(op::FILE, &[file::REMOVE.into(), local("TokPath")]);
     t.emit(
         op::FILE,
@@ -263,6 +270,16 @@ pub fn assemble_launcher(options: &LauncherOptions) -> Result<AssembledImage, La
         &[filename::EXIST.into(), local("Proc"), local("Flag")],
     );
     t.emit(op::JR_FALSE, &[local("Flag"), label("Done")]);
+    // A program that draws asks for the screen with .lcd: any UI_DRAW from this slot ends the
+    // firmware's run animation, which would draw over the program. Removing .lcd answers it.
+    t.emit(
+        op::FILENAME,
+        &[filename::EXIST.into(), local("LcdPath"), local("Flag")],
+    );
+    t.emit(op::JR_FALSE, &[local("Flag"), label("BackCheck")]);
+    t.emit(op::UI_DRAW, &[ui_draw::UPDATE.into()]);
+    t.emit(op::FILE, &[file::REMOVE.into(), local("LcdPath")]);
+    t.label("BackCheck")?;
     t.emit(
         op::FILENAME,
         &[filename::EXIST.into(), local("BakPath"), local("Flag")],
@@ -616,11 +633,11 @@ mod tests {
             }
         }
         markers.sort();
-        assert_eq!(markers, ["/.bak", "/.run", "/.tok"]);
+        assert_eq!(markers, ["/.bak", "/.lcd", "/.run", "/.tok"]);
 
         let folder = format!("{PRJS}/demo");
         let paths = evaluate_strings(&image, &folder, "32768").paths;
-        for marker in [".run", ".bak", ".tok"] {
+        for marker in [".run", ".bak", ".lcd", ".tok"] {
             assert!(
                 paths.contains(&format!("{folder}/{marker}")),
                 "{marker} is used as {folder}/{marker}"

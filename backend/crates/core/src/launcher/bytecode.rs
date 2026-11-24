@@ -34,6 +34,7 @@ pub mod op {
     pub const JR_EQ8: u8 = 0x6c;
     pub const STRINGS: u8 = 0x7d;
     pub const UI_BUTTON: u8 = 0x83;
+    pub const UI_DRAW: u8 = 0x84;
     pub const TIMER_WAIT: u8 = 0x85;
     pub const TIMER_READY: u8 = 0x86;
     pub const FILE: u8 = 0xc0;
@@ -59,6 +60,9 @@ pub mod sub {
     }
     pub mod ui_button {
         pub const SET_BACK_BLOCK: i32 = 10;
+    }
+    pub mod ui_draw {
+        pub const UPDATE: i32 = 0;
     }
 }
 
